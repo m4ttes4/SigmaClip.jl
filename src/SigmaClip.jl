@@ -141,7 +141,7 @@ function sigma_clip_bounds(
     std_reducer::F2,
     maxiter::Int,
     bad::Bool
-) where {T,L,F1,F2,}
+) where {T,L,F1,F2}
 
     N = 0
     have_mask = !isnothing(mask)
