@@ -85,6 +85,19 @@ for i in 1:length(my_data)
 end
 ```
 
+### Configuration (Keywords)
+
+| Argument | Default | Description |
+| :--- | :--- | :--- |
+| `sigma_lower` | `3` | Tolerance (number of std devs) below the central value. |
+| `sigma_upper` | `3` | Tolerance (number of std devs) above the central value. |
+| `maxiter` | `5` | Maximum number of iterations. |
+| `cent_reducer` | `fast_median!` | Function to calculate the central tendency. |
+| `std_reducer` | `std` | Function to calculate the dispersion. |
+| `mask` | `nothing` | Optional initial mask (`true` indicates a value to ignore). |
+| `bad` | `true` | The boolean value representing a "bad" datum in the input mask. |
+| `buffer` | `nothing` | A pre-allocated vector of size `length(x)` for internal calculations. |
+
 
 # License
 
