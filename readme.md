@@ -48,33 +48,16 @@ Use sigma_clip to identify outliers without altering the original dataset. This 
 
 using SigmaClip
 
-  
-  
-
 data = randn(100)
 
-  
-
 data[50] = 100.0 # High outlier
-
-  
-
 data[51] = -50.0 # Low outlier
-
-  
 
 mask = sigma_clip_mask(data, sigma_lower=3, sigma_upper=3)
 
-  
-
 clean_data = data[.!mask]
 
-  
-
 println("Original size: $(length(data))")
-
-  
-
 println("Cleaned size: $(length(clean_data))")
 
 ```
