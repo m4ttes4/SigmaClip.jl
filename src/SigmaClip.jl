@@ -132,11 +132,13 @@ sigma_clip(x::AbstractArray{T}, args...; kwargs...) where {T <: Integer} = sigma
 
 
 sigma_clip_bounds(x::AbstractArray{T}; 
+mask = nothing,
+buffer = Vector{T}(undef, length(x)),
 sigma_lower = 3,
 sigma_upper = 3,
 cent_reducer = fast_median!,
 std_reducer = std,
-maxiter = 5) where T = sigma_clip_bounds(x, nothing, Vector{T}(undef, length(x)),
+maxiter = 5) where T = sigma_clip_bounds(x, mask, buffer,
 float(sigma_lower), 
 float(sigma_upper), 
 cent_reducer,
@@ -144,6 +146,7 @@ std_reducer,
 maxiter)
 
 # TODO make this function return the buffer so we can compute mean, median and std ?
+# or just the buffer index
 function sigma_clip_bounds(
     x::AbstractArray{T},
     mask::Union{Nothing,AbstractArray{Bool}},
