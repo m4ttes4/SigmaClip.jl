@@ -4,7 +4,8 @@ module SigmaClip
 # TODO make buffer args only 
 using Statistics
 
-const BAD_PIXEL = true 
+const BAD_PIXEL = true #it marks a flagged pixel
+const GOOD_PIXEL = false
 
 export sigma_clip_mask, sigma_clip_mask!, sigma_clip!, sigma_clip
 
@@ -74,6 +75,8 @@ function sigma_clip_mask!(x::AbstractArray{T, N},
 
         if is_outlier
             target[i] = BAD_PIXEL
+        else
+            target[i] = GOOD_PIXEL
         end
     end
 
