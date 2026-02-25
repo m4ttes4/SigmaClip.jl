@@ -73,11 +73,8 @@ function sigma_clip_mask!(x::AbstractArray{T, N},
 
         is_outlier = ismissing(val) || !isfinite(val) || val < lb || val > up
 
-        if is_outlier
-            target[i] = BAD_PIXEL
-        else
-            target[i] = GOOD_PIXEL
-        end
+        target[i] = is_outlier
+        
     end
 
     return target
@@ -219,7 +216,7 @@ function sigma_clip_bounds(
         end
 
 
-        if current_count == 0
+        if current_count < 2# std = 0
             return lower_bound, upper_bound
         end
     end
@@ -271,8 +268,8 @@ function fast_median!(a::AbstractVector{T}) where T
     end 
 
     if iseven(n)
-        m1 = _kth_smallest!(a, n ÷ 2)
         m2 = _kth_smallest!(a, (n ÷ 2) + 1)
+        m1 = _kth_smallest!(a, n ÷ 2)
         return 0.5 * (m1 + m2)
     else
         return _kth_smallest!(a, (n + 1) ÷ 2)
