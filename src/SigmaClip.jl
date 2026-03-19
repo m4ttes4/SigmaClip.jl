@@ -121,8 +121,10 @@ end
 # quickselect on aux to get the MAD.
 #
 @inline function _compute_stats(::_FastMedian, ::_MADStd,
-    buf::AbstractVector{T}, n::Int,
-    ws::SigmaClipWorkspace{T}) where {T<:AbstractFloat}
+    n::Int,
+    ws::SigmaClipWorkspace{T}) where {T}
+    
+    buf = ws.buf
     bv = @inbounds view(buf, 1:n)
     m = fast_median!(bv)                   # quickselect on buf — buf reordered
 
@@ -141,8 +143,9 @@ end
 # calling them after fast_median! has reordered buf is safe.
 #
 @inline function _compute_stats(::_FastMedian, std_f,
-    buf::AbstractVector{T}, n::Int,
-    ws::SigmaClipWorkspace) where {T<:AbstractFloat}
+    n::Int,
+    ws::SigmaClipWorkspace{T}) where {T}
+    buf = ws.buf
     bv = @inbounds view(buf, 1:n)
     m = fast_median!(bv)
     s = std_f(bv)
@@ -154,8 +157,9 @@ end
 # Both reducers are plain callables.  No buffer reuse assumptions are made.
 #
 @inline function _compute_stats(cent_f, std_f,
-    buf::AbstractVector, n::Int,
-    ::SigmaClipWorkspace)
+    n::Int,
+    ws::SigmaClipWorkspace{T}) where T
+    buf = ws.buf
     bv = @inbounds view(buf, 1:n)
     return cent_f(bv), std_f(bv)
 end
@@ -193,7 +197,7 @@ function _sigma_clip_bounds(
     iter = 0
 
     while true
-        c, s = _compute_stats(cent_reducer, std_reducer, ws.buf, current, ws)
+        c, s = _compute_stats(cent_reducer, std_reducer, current, ws)
 
         lower_bound = c - s * sigma_lower
         upper_bound = c + s * sigma_upper
@@ -343,6 +347,7 @@ function sigma_clip_bounds(x::AbstractArray{T};
     cent_reducer::C=fast_median,
     std_reducer::S=mad_std,
     maxiter::Int=5) where {T,C,S}
+
     ws = _ensure_workspace(float(T), length(x), workspace)
     _sigma_clip_bounds(x, mask, ws,
         float(sigma_lower), float(sigma_upper),
