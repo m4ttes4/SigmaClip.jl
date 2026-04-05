@@ -1,6 +1,6 @@
 name = "SigmaClip"
 uuid = "e8e6a0c9-ed5e-482f-a5cb-ec074f5ee4bb"
-version = "0.1.1"
+version = "0.2"
 authors = ["Matteo Sapori <matteosap@hotmail.com>"]
 
 [deps]

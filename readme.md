@@ -10,13 +10,12 @@ SigmaClip.jl provides a lightweight, highly efficient, and robust toolset for
 identifying and rejecting outliers using iterative sigma clipping. It is
 primarily designed for **astrophysical data processing** — cleaning light
 curves, removing cosmic rays from CCD frames, rejecting bad pixels in image
-stacks — but works equally well on any numeric array: 1-D time series, 2-D
+stacks — but works equally well on any numeric array: 1-D, 2-D
 images, or higher-dimensional data.
 
 The library is designed to be numerically stable, handling `NaN` and `Inf`
 values gracefully, and offers both a convenient one-liner API and a
-zero-allocation path for high-throughput workloads such as iterating over every
-row of a multi-extension FITS image.
+zero-allocation path for high-throughput workloads.
 
 ## Overview
 
@@ -104,23 +103,24 @@ println("outliers: x < $lb  or  x > $ub")
 | `sigma_lower` | `3` | Rejection threshold below the centre (in units of dispersion). |
 | `sigma_upper` | `3` | Rejection threshold above the centre. |
 | `maxiter` | `5` | Maximum number of clipping iterations. Pass `-1` to run until convergence. |
-| `cent_reducer` | `fast_median` | Centre estimator. Any callable `f(v::AbstractVector) -> scalar`. |
-| `std_reducer` | `mad_std` | Dispersion estimator. Any callable `f(v::AbstractVector) -> scalar`. |
-| `mask` | `nothing` | Initial boolean mask (`true` = exclude from bound computation). |
+| `center` | `fast_median!` | Centre estimator. Any callable `f(v::AbstractVector) -> scalar`. |
+| `spread` | `mad_std!` | Dispersion estimator. Any callable `f(v::AbstractVector) -> scalar`. |
+| `exclude` | `nothing` | Boolean array selecting points excluded from bound computation. |
 | `workspace` | `nothing` | Pre-allocated [`SigmaClipWorkspace`](#zero-allocation-hot-loops). |
 
 ---
 
-## Reducer sentinels
+## Built-in reducers
 
-SigmaClip exports two sentinel values that unlock specialised, faster code paths
-resolved entirely at compile time via Julia's multiple dispatch — there is no
-runtime overhead compared to calling the functions directly.
+SigmaClip exports two reducer functions that also unlock specialised, faster
+code paths when passed directly as `center=fast_median!` and `spread=mad_std!`.
+The dispatch is resolved entirely at compile time via Julia's multiple
+dispatch.
 
-### `fast_median`
+### `fast_median!`
 
-Pass as `cent_reducer=fast_median` (the default) to select the built-in
-allocation-free O(n) quickselect median. When combined with `std_reducer=mad_std`,
+Pass as `center=fast_median!` (the default) to select the built-in
+allocation-free O(n) quickselect median. When combined with `spread=mad_std!`,
 the median is computed **once** and shared with the MAD calculation (two
 quickselects per iteration instead of three).
 
@@ -136,9 +136,9 @@ m = fast_median!(buf)   # reorders buf, returns 3.0
 > `fast_median!` modifies the order of elements in the input vector.
 > All values are preserved, but the original ordering is lost.
 
-### `mad_std`
+### `mad_std!`
 
-Pass as `std_reducer=mad_std` to use the **Median Absolute Deviation** (scaled
+Pass as `spread=mad_std!` to use the **Median Absolute Deviation** (scaled
 by 1.4826 to match the standard deviation of a normal distribution) as the
 dispersion estimator:
 
@@ -152,36 +152,41 @@ quickselect per iteration.
 
 ```julia
 # Robust clipping with shared median computation
-sigma_clip!(data; std_reducer=mad_std)
+sigma_clip!(data; spread=mad_std!)
 
-# Explicit (same as above — fast_median is the default cent_reducer)
-sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+# Explicit (same as above — fast_median! is the default center)
+sigma_clip!(data; center=fast_median!, spread=mad_std!)
 ```
 
 > [!NOTE]
-> The sentinel `fast_median` (used as `cent_reducer=fast_median`) is distinct
-> from the function `fast_median!`. Passing the function directly as
-> `cent_reducer=fast_median!` also works but falls through to the generic
-> dispatch path and will **not** share the median with a `mad_std` calculation.
+> Passing `center=fast_median!` enables the specialised fast path. Wrapping it,
+> for example as `center = v -> fast_median!(v)`, still works but falls through
+> to the generic path and will **not** share the median with `spread=mad_std!`.
 
 ---
 
 ## Custom statistics
 
 Any callable that accepts an `AbstractVector` and returns a scalar can be used
-as `cent_reducer` or `std_reducer`. SigmaClip has no dependency on
+as `center` or `spread`. SigmaClip has no dependency on
 `Statistics.jl`, but you can freely pull functions from it (or anywhere else)
 as custom reducers by adding `Statistics` to your own project.
+
+Custom reducers receive a mutable view of SigmaClip's internal workspace
+buffer. They may reorder the elements in that buffer, but they should not
+change the values stored in it. Reordering is safe; overwriting values,
+inserting derived quantities, or otherwise changing the data can lead to
+incorrect clipping results in later steps of the algorithm.
 
 ```julia
 using Statistics   # your project's dependency, not SigmaClip's
 
 # Mean centre + standard deviation (less robust, but faster than MAD)
-sigma_clip!(data; cent_reducer=mean, std_reducer=std)
+sigma_clip!(data; center=mean, spread=std)
 
 # Median centre + IQR-based spread (fully custom)
 iqr_spread(v) = (quantile(v, 0.75) - quantile(v, 0.25)) / 1.349
-sigma_clip!(data; std_reducer=iqr_spread)
+sigma_clip!(data; spread=iqr_spread)
 ```
 
 ---
@@ -205,11 +210,11 @@ end
 The workspace holds two internal buffers:
 
 - `buf` — working copy of the valid elements, compacted in-place each iteration.
-- `aux` — auxiliary buffer used only when `std_reducer=mad_std` to hold the
+- `aux` — auxiliary buffer used only when `spread=mad_std!` to hold the
   absolute deviations `|xᵢ − median|` without overwriting `buf`.
 
-Both buffers are the same length. When `mad_std` is not used, `aux` is never
-written.
+Both buffers are the same length. When `spread != mad_std!`, `aux` is never
+written by the specialised path.
 
 ### Constructors
 
@@ -228,10 +233,10 @@ If you pass a workspace whose buffer is shorter than the input array, an
 
 | Configuration | Quickselects / iteration | Notes |
 | :--- | :---: | :--- |
-| `fast_median` + `mad_std` (**default**) | 2 | median shared; `aux` written once per iteration |
-| `fast_median` + `std` | 1 | `std` is a single O(n) pass; less robust |
-| custom `cent_reducer` + `mad_std` | 2–3 | median computed independently |
-| custom `cent_reducer` + custom `std_reducer` | — | fully generic, no fast path |
+| `fast_median!` + `mad_std!` (**default**) | 2 | median shared; `aux` written once per iteration |
+| `fast_median!` + `std` | 1 | `std` is a single O(n) pass; less robust |
+| custom `center` + `mad_std!` | 2–3 | median computed independently |
+| custom `center` + custom `spread` | — | fully generic, no fast path |
 
 The quickselect used internally (Wirth's algorithm) has O(n) average time and
 O(n²) worst case. On typical scientific data the average case dominates.

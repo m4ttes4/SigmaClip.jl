@@ -128,6 +128,80 @@ end
             @test allocs == 0
         end
 
+        @testset "public entrypoints are allocation-free with workspace" begin
+            function allocs_public_entrypoints()
+                x = randn(1000)
+                ws = SigmaClipWorkspace(Float64, 1000)
+                buf = copy(x)
+                target = falses(length(x))
+
+                # Warm up public call paths before measuring.
+                SigmaClip.sigma_clip_bounds(x; workspace=ws)
+                sigma_clip!(buf; workspace=ws)
+                sigma_clip_mask!(x, target; workspace=ws)
+
+                bounds = @allocated SigmaClip.sigma_clip_bounds(x; workspace=ws)
+                clip = @allocated sigma_clip!(buf; workspace=ws)
+                mask_bang = @allocated sigma_clip_mask!(x, target; workspace=ws)
+
+                (; bounds, clip, mask_bang)
+            end
+
+            allocs = allocs_public_entrypoints()
+            @test all(values(allocs) .== 0)
+        end
+
+        @testset "internal helpers are allocation-free with workspace" begin
+            function allocs_internal_helpers()
+                x = randn(1000)
+                exclude = falses(1000)
+                exclude[1] = true
+                ws = SigmaClipWorkspace(Float64, 1000)
+                ws.buf .= x
+
+                # Warm up all internal call paths before measuring.
+                SigmaClip._ensure_workspace(Float64, length(x), ws)
+                SigmaClip._compute_stats(fast_median!, mad_std!, length(x), ws)
+                SigmaClip._compute_stats(fast_median!, std, length(x), ws)
+                SigmaClip._compute_stats(mean, std, length(x), ws)
+                SigmaClip._sigma_clip_bounds_impl(x, nothing, ws,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                SigmaClip._sigma_clip_bounds_impl(x, exclude, ws,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                SigmaClip._sigma_clip_bounds_checked(x, ws, nothing,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                SigmaClip._sigma_clip_bounds_checked(x, ws, exclude,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+
+                x_int = round.(Int, 10 .* x)
+                ws_int = SigmaClipWorkspace(Float64, length(x_int))
+                SigmaClip._sigma_clip_bounds_checked(x_int, ws_int, nothing,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+
+                ensure = @allocated SigmaClip._ensure_workspace(Float64, length(x), ws)
+                stats_mad = @allocated SigmaClip._compute_stats(fast_median!, mad_std!, length(x), ws)
+                stats_std = @allocated SigmaClip._compute_stats(fast_median!, std, length(x), ws)
+                stats_generic = @allocated SigmaClip._compute_stats(mean, std, length(x), ws)
+                bounds_impl = @allocated SigmaClip._sigma_clip_bounds_impl(x, nothing, ws,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                bounds_impl_exclude = @allocated SigmaClip._sigma_clip_bounds_impl(x, exclude, ws,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                bounds_checked = @allocated SigmaClip._sigma_clip_bounds_checked(x, ws, nothing,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                bounds_checked_exclude = @allocated SigmaClip._sigma_clip_bounds_checked(x, ws, exclude,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+                bounds_checked_int = @allocated SigmaClip._sigma_clip_bounds_checked(x_int, ws_int, nothing,
+                    3.0, 3.0, fast_median!, mad_std!, 5)
+
+                (; ensure, stats_mad, stats_std, stats_generic,
+                   bounds_impl, bounds_impl_exclude,
+                   bounds_checked, bounds_checked_exclude, bounds_checked_int)
+            end
+
+            allocs = allocs_internal_helpers()
+            @test all(values(allocs) .== 0)
+        end
+
     end # SigmaClipWorkspace
 
 
@@ -139,7 +213,7 @@ end
             # to [0, 0]. The meaningful check is that outliers are outside bounds.
             data = vcat(zeros(98), [100.0, -100.0])
             lb, ub = SigmaClip.sigma_clip_bounds(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test 100.0 > ub
             @test -100.0 < lb
         end
@@ -168,9 +242,9 @@ end
             # With very tight sigma, multiple iterations would clip more
             data = Float64[1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 10, 50]
             lb1, ub1 = SigmaClip.sigma_clip_bounds(data; maxiter=1,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             lb5, ub5 = SigmaClip.sigma_clip_bounds(data; maxiter=5,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             # 5 iterations should converge to tighter or equal bounds
             @test ub5 <= ub1 + 1e-10
         end
@@ -178,33 +252,31 @@ end
         @testset "maxiter=-1 runs until convergence" begin
             data = vcat(ones(50), [1000.0])
             lb, ub = SigmaClip.sigma_clip_bounds(data; maxiter=-1,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test ub < 100.0
         end
 
         @testset "mask excludes values from bound computation" begin
             data = [0.0, 0.0, 0.0, 0.0, 50.0]
-            mask = falses(5)
-            mask[end] = false   # mark 50.0 as already-bad
+            exclude = falses(5)
+            exclude[end] = true   # mark 50.0 as already-bad
 
-            # With mask: 50.0 excluded from stats, bounds should be tight
-            mask_flagged = trues(5)
-            mask_flagged[end] = true
-            lb_m, ub_m = SigmaClip.sigma_clip_bounds(data; mask=mask_flagged,
-                cent_reducer=fast_median, std_reducer=mad_std)
+            # With exclude: 50.0 excluded from stats, bounds should be tight
+            lb_m, ub_m = SigmaClip.sigma_clip_bounds(data; exclude=exclude,
+                center=fast_median!, spread=mad_std!)
             lb_u, ub_u = SigmaClip.sigma_clip_bounds(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test ub_m <= ub_u
         end
 
         @testset "asymmetric sigma" begin
-            # Uses std_reducer=std: zeros-dominated data has MAD=0, which would
+            # Uses spread=std: zeros-dominated data has MAD=0, which would
             # collapse bounds to [0,0] regardless of sigma_lower/sigma_upper.
             # std is non-zero here and correctly exercises asymmetric thresholds.
             data = vcat(zeros(50), [10.0], [-10.0])
             lb, ub = SigmaClip.sigma_clip_bounds(data;
                 sigma_lower=100.0, sigma_upper=2.0,
-                cent_reducer=fast_median, std_reducer=std)
+                center=fast_median!, spread=std)
             # tight upper threshold: ub is well below 10.0
             @test ub < 10.0
             # very permissive lower threshold: lb is well below -10.0
@@ -219,21 +291,21 @@ end
 
         @testset "high outlier is clipped" begin
             data = vcat(zeros(Float64, 99), [1000.0])
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[end])
             @test all(==(0.0), data[1:99])
         end
 
         @testset "low outlier is clipped" begin
             data = vcat([-1000.0], zeros(Float64, 99))
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[1])
             @test all(==(0.0), data[2:end])
         end
 
         @testset "both extremes clipped independently" begin
             data = vcat(zeros(Float64, 98), [500.0, -500.0])
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[99])
             @test isnan(data[100])
             @test count(isnan, data) == 2
@@ -241,37 +313,37 @@ end
 
         @testset "NaN input stays NaN" begin
             data = [1.0, 2.0, NaN, 3.0]
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[3])
         end
 
         @testset "Inf is always clipped" begin
             data = vcat(ones(Float64, 10), [Inf])
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[end])
         end
 
         @testset "-Inf is always clipped" begin
             data = vcat(ones(Float64, 10), [-Inf])
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[end])
         end
 
         @testset "outlier at first element" begin
             data = vcat([1000.0], zeros(Float64, 50))
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[1])
         end
 
         @testset "outlier at last element" begin
             data = vcat(zeros(Float64, 50), [1000.0])
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[end])
         end
 
         @testset "constant array — nothing clipped" begin
             data = fill(3.0, 50)
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test all(==(3.0), data)
         end
 
@@ -279,7 +351,7 @@ end
             data = randn(100)
             original = copy(data)
             sigma_clip!(data; sigma_lower=1000.0, sigma_upper=1000.0,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test all(!isnan, data)
         end
 
@@ -289,13 +361,12 @@ end
             @test result === data
         end
 
-        @testset "mask kwarg shields value from bound computation" begin
+        @testset "exclude kwarg shields value from bound computation" begin
             data = Float64[0, 0, 0, 0, 50]
-            mask = trues(5)
-            mask[5] = true   # treat index 5 as already bad
-            original = copy(data)
-            sigma_clip!(data; mask=mask,
-                cent_reducer=fast_median, std_reducer=mad_std)
+            exclude = falses(5)
+            exclude[5] = true   # treat index 5 as already bad
+            sigma_clip!(data; exclude=exclude,
+                center=fast_median!, spread=mad_std!)
             # 50.0 was excluded from stats: bounds are tight around 0
             # so 50.0 should also be clipped in the output
             @test isnan(data[5])
@@ -303,11 +374,11 @@ end
         end
 
         @testset "asymmetric sigma_upper clips high only" begin
-            # std_reducer=std: zeros-based data has MAD=0, which defeats asymmetry.
+            # spread=std: zeros-based data has MAD=0, which defeats asymmetry.
             # std correctly produces non-zero dispersion here.
             data = vcat(zeros(Float64, 50), [100.0], [-100.0])
             sigma_clip!(data; sigma_lower=1000.0, sigma_upper=2.0,
-                cent_reducer=fast_median, std_reducer=std)
+                center=fast_median!, spread=std)
             @test isnan(data[51])      # high outlier clipped
             @test !isnan(data[52])     # low outlier kept
         end
@@ -315,7 +386,7 @@ end
         @testset "asymmetric sigma_lower clips low only" begin
             data = vcat(zeros(Float64, 50), [100.0], [-100.0])
             sigma_clip!(data; sigma_lower=2.0, sigma_upper=1000.0,
-                cent_reducer=fast_median, std_reducer=std)
+                center=fast_median!, spread=std)
             @test !isnan(data[51])     # high outlier kept
             @test isnan(data[52])      # low outlier clipped
         end
@@ -326,7 +397,7 @@ end
 
         @testset "Float32 input preserved as Float32" begin
             data = Float32[1, 1, 1, 1, 100]
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test eltype(data) == Float32
             @test isnan(data[end])
         end
@@ -340,19 +411,19 @@ end
         @testset "original array is never modified" begin
             original = vcat(zeros(Float64, 99), [1000.0])
             backup = copy(original)
-            sigma_clip(original; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip(original; center=fast_median!, spread=mad_std!)
             @test original == backup
         end
 
         @testset "outlier replaced in returned copy" begin
             data = vcat(zeros(Float64, 99), [1000.0])
-            cleaned = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            cleaned = sigma_clip(data; center=fast_median!, spread=mad_std!)
             @test isnan(cleaned[end])
         end
 
         @testset "integer input promoted to Float64" begin
             data = [1, 1, 1, 1, 100]
-            result = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            result = sigma_clip(data; center=fast_median!, spread=mad_std!)
             @test result isa Vector{Float64}
             @test isnan(result[end])
         end
@@ -360,8 +431,8 @@ end
         @testset "result matches sigma_clip!" begin
             data = randn(200)
             data[42] = 999.0
-            r1 = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
-            r2 = sigma_clip!(copy(data); cent_reducer=fast_median, std_reducer=mad_std)
+            r1 = sigma_clip(data; center=fast_median!, spread=mad_std!)
+            r2 = sigma_clip!(copy(data); center=fast_median!, spread=mad_std!)
             for i in eachindex(r1)
                 if isnan(r1[i])
                     @test isnan(r2[i])
@@ -380,7 +451,7 @@ end
         @testset "known outliers are marked true" begin
             data = vcat(zeros(Float64, 98), [500.0, -500.0])
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[99] == true
             @test mask[100] == true
         end
@@ -389,7 +460,7 @@ end
             data = randn(200)
             data[1] = 1e6
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[1] == true
             # the vast majority of normally distributed values should survive
             @test count(mask) < 10
@@ -398,14 +469,14 @@ end
         @testset "NaN input element is marked true" begin
             data = [1.0, 2.0, NaN, 3.0]
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[3] == true
         end
 
         @testset "Inf input element is marked true" begin
             data = vcat(ones(Float64, 20), [Inf])
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[end] == true
         end
 
@@ -418,7 +489,7 @@ end
             data = vcat(zeros(Float64, 50), [999.0])
             target = falses(51)
             sigma_clip_mask!(data, target;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test target[end] == true
             @test count(target) == 1
         end
@@ -435,9 +506,9 @@ end
             data[77] = 1e5
             data[200] = NaN
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             clipped = sigma_clip(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             for i in eachindex(data)
                 @test mask[i] == isnan(clipped[i])
             end
@@ -451,30 +522,30 @@ end
 
         BASE = vcat(zeros(Float64, 98), [500.0, -500.0])
 
-        @testset "(fast_median, mad_std) — specialised, shared median" begin
+        @testset "(fast_median!, mad_std!) — specialised, shared median" begin
             data = copy(BASE)
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=mad_std)
+            sigma_clip!(data; center=fast_median!, spread=mad_std!)
             @test isnan(data[99]) && isnan(data[100])
             @test count(isnan, data) == 2
         end
 
-        @testset "(fast_median, std) — specialised centre, generic std" begin
+        @testset "(fast_median!, std) — specialised centre, generic std" begin
             data = copy(BASE)
-            sigma_clip!(data; cent_reducer=fast_median, std_reducer=std)
+            sigma_clip!(data; center=fast_median!, spread=std)
             @test isnan(data[99]) && isnan(data[100])
         end
 
-        @testset "(fast_median!, std) — function as cent_reducer, generic fallback" begin
+        @testset "(fast_median!, std) — function as center, generic fallback" begin
             # Passing the mutating function, not the sentinel — still works
             data = copy(BASE)
-            sigma_clip!(data; cent_reducer=fast_median!, std_reducer=std)
+            sigma_clip!(data; center=fast_median!, spread=std)
             @test isnan(data[99]) && isnan(data[100])
         end
 
         @testset "(mean, std) — fully generic fallback" begin
             using_mean(v) = sum(v) / length(v)
             data = copy(BASE)
-            sigma_clip!(data; cent_reducer=using_mean, std_reducer=std)
+            sigma_clip!(data; center=using_mean, spread=std)
             # mean is less robust but should still catch a 5-sigma outlier
             @test isnan(data[99]) || isnan(data[100])
         end
@@ -483,21 +554,21 @@ end
             # Fixed centre at 0, fixed spread of 1 → bounds are [-50, 50]
             data = copy(BASE)
             sigma_clip!(data;
-                cent_reducer=_ -> 0.0,
-                std_reducer=_ -> 1.0,
+                center=_ -> 0.0,
+                spread=_ -> 1.0,
                 sigma_lower=50.0,
                 sigma_upper=50.0)
             @test isnan(data[99]) && isnan(data[100])
             @test all(==(0.0), data[1:98])
         end
 
-        @testset "mad_std result matches manual calculation" begin
+        @testset "mad_std! result matches manual calculation" begin
             v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
             ws = SigmaClipWorkspace(Float64, length(v))
-            buf = copy(v)
+            ws.buf .= v
             _, s = SigmaClip._compute_stats(
-                SigmaClip.fast_median, SigmaClip.mad_std,
-                buf, length(buf), ws)
+                SigmaClip.fast_median!, SigmaClip.mad_std!,
+                length(v), ws)
             @test s ≈ ref_mad_std(v)
         end
 
@@ -516,7 +587,7 @@ end
                 idx = rand(1:500)
                 data[idx] = 1000.0
                 mask = sigma_clip_mask(data;
-                    cent_reducer=fast_median, std_reducer=mad_std)
+                    center=fast_median!, spread=mad_std!)
                 @test mask[idx] == true
             end
         end
@@ -524,7 +595,7 @@ end
         @testset "false positive rate on clean normal data is low" begin
             data = randn(10_000)
             mask = sigma_clip_mask(data; sigma_lower=3.0, sigma_upper=3.0,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             # For σ=3 and normal data, theoretical false positive rate ≈ 0.27%
             # We allow up to 1% to be safe
             @test count(mask) / length(data) < 0.01
@@ -533,14 +604,14 @@ end
         @testset "multiple outliers at different magnitudes" begin
             data = vcat(zeros(Float64, 97), [10.0, 100.0, 1000.0])
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[98] && mask[99] && mask[100]
         end
 
         @testset "outliers at both ends of distribution" begin
             data = vcat([-200.0], zeros(Float64, 98), [200.0])
             mask = sigma_clip_mask(data;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[1] && mask[end]
         end
 
@@ -548,9 +619,9 @@ end
             # 50 is a mild outlier; 1000 inflates std so 50 might survive iter 1
             data = vcat(zeros(Float64, 97), [50.0, 100.0, 1000.0])
             mask_1 = sigma_clip_mask(data; maxiter=1,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             mask_5 = sigma_clip_mask(data; maxiter=5,
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             # More iterations ⟹ at least as many outliers found
             @test count(mask_5) >= count(mask_1)
         end
@@ -559,7 +630,7 @@ end
             img = zeros(Float64, 10, 10)
             img[3, 7] = 999.0
             mask = sigma_clip_mask(img;
-                cent_reducer=fast_median, std_reducer=mad_std)
+                center=fast_median!, spread=mad_std!)
             @test mask[3, 7] == true
             @test count(mask) == 1
         end
@@ -577,13 +648,13 @@ end
 
         @testset "length-1 array — no clipping" begin
             data = [42.0]
-            result = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            result = sigma_clip(data; center=fast_median!, spread=mad_std!)
             @test !isnan(result[1])
         end
 
         @testset "length-2 array" begin
             data = [1.0, 1000.0]
-            result = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            result = sigma_clip(data; center=fast_median!, spread=mad_std!)
             # With only 2 points MAD is 0, std is non-zero — just verify no crash
             @test length(result) == 2
         end
@@ -596,13 +667,13 @@ end
 
         @testset "all-Inf array" begin
             data = fill(Inf, 20)
-            result = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            result = sigma_clip(data; center=fast_median!, spread=mad_std!)
             @test all(isnan, result)
         end
 
         @testset "mixed NaN and Inf" begin
             data = [1.0, NaN, Inf, -Inf, 2.0, 3.0]
-            result = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            result = sigma_clip(data; center=fast_median!, spread=mad_std!)
             @test isnan(result[2])
             @test isnan(result[3])
             @test isnan(result[4])
@@ -623,7 +694,7 @@ end
 
         @testset "input already clean — no NaN introduced" begin
             data = collect(1.0:10.0)
-            result = sigma_clip(data; cent_reducer=fast_median, std_reducer=mad_std)
+            result = sigma_clip(data; center=fast_median!, spread=mad_std!)
             @test !any(isnan, result)
         end
 
