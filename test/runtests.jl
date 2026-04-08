@@ -17,6 +17,34 @@ ref_mad_std(v) = begin
     ref_median(dev) * 1.4826022185056018
 end
 
+struct ExternalWorkspace{T}
+    scratch1::Vector{T}
+    scratch2::Vector{T}
+    scratch3::Vector{T}
+    scratch4::Vector{T}
+end
+
+SigmaClip.workspace_buffer(ws::ExternalWorkspace) = ws.scratch2
+SigmaClip.workspace_auxbuffer(ws::ExternalWorkspace) = ws.scratch4
+
+struct MissingWorkspaceProtocol end
+
+struct WrongTypeWorkspace
+    buf::Vector{Float32}
+    aux::Vector{Float32}
+end
+
+SigmaClip.workspace_buffer(ws::WrongTypeWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::WrongTypeWorkspace) = ws.aux
+
+struct ShortAuxWorkspace{T}
+    buf::Vector{T}
+    aux::Vector{T}
+end
+
+SigmaClip.workspace_buffer(ws::ShortAuxWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
+
 # @testset "SigmaClip.jl" begin
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -200,6 +228,57 @@ end
 
             allocs = allocs_internal_helpers()
             @test all(values(allocs) .== 0)
+        end
+
+        @testset "custom workspace protocol is supported" begin
+            data = vcat(zeros(Float64, 98), [500.0, -500.0])
+            builtin = sigma_clip(data; center=fast_median!, spread=mad_std!)
+
+            ws = ExternalWorkspace(zeros(Float64, 100), zeros(Float64, 100),
+                zeros(Float64, 100), zeros(Float64, 100))
+            custom = sigma_clip(data; workspace=ws, center=fast_median!, spread=mad_std!)
+
+            for i in eachindex(builtin)
+                if isnan(builtin[i])
+                    @test isnan(custom[i])
+                else
+                    @test custom[i] == builtin[i]
+                end
+            end
+        end
+
+        @testset "custom workspace is allocation-free in public entrypoints" begin
+            function allocs_custom_workspace()
+                x = randn(1000)
+                buf = copy(x)
+                target = falses(length(x))
+                ws = ExternalWorkspace(zeros(Float64, 1000), zeros(Float64, 1000),
+                    zeros(Float64, 1000), zeros(Float64, 1000))
+
+                SigmaClip.sigma_clip_bounds(x; workspace=ws)
+                sigma_clip!(buf; workspace=ws)
+                sigma_clip_mask!(x, target; workspace=ws)
+
+                bounds = @allocated SigmaClip.sigma_clip_bounds(x; workspace=ws)
+                clip = @allocated sigma_clip!(buf; workspace=ws)
+                mask_bang = @allocated sigma_clip_mask!(x, target; workspace=ws)
+
+                (; bounds, clip, mask_bang)
+            end
+
+            allocs = allocs_custom_workspace()
+            @test all(values(allocs) .== 0)
+        end
+
+        @testset "workspace protocol errors are validated" begin
+            data = randn(20)
+            missing = MissingWorkspaceProtocol()
+            wrong_type = WrongTypeWorkspace(zeros(Float32, 20), zeros(Float32, 20))
+            short_aux = ShortAuxWorkspace(zeros(Float64, 20), zeros(Float64, 10))
+
+            @test_throws ArgumentError sigma_clip!(data; workspace=missing)
+            @test_throws ArgumentError sigma_clip!(data; workspace=wrong_type)
+            @test_throws ArgumentError sigma_clip!(data; workspace=short_aux)
         end
 
     end # SigmaClipWorkspace
@@ -448,36 +527,36 @@ end
     # ─────────────────────────────────────────────────────────────────────────
     @testset "sigma_clip_mask / sigma_clip_mask!" begin
 
-        @testset "known outliers are marked true" begin
+        @testset "known outliers are marked false" begin
             data = vcat(zeros(Float64, 98), [500.0, -500.0])
             mask = sigma_clip_mask(data;
                 center=fast_median!, spread=mad_std!)
-            @test mask[99] == true
-            @test mask[100] == true
+            @test mask[99] == false
+            @test mask[100] == false
         end
 
-        @testset "clean elements are marked false" begin
+        @testset "clean elements are marked true" begin
             data = randn(200)
             data[1] = 1e6
             mask = sigma_clip_mask(data;
                 center=fast_median!, spread=mad_std!)
-            @test mask[1] == true
+            @test mask[1] == false
             # the vast majority of normally distributed values should survive
-            @test count(mask) < 10
+            @test count(mask) > 190
         end
 
-        @testset "NaN input element is marked true" begin
+        @testset "NaN input element is marked false" begin
             data = [1.0, 2.0, NaN, 3.0]
             mask = sigma_clip_mask(data;
                 center=fast_median!, spread=mad_std!)
-            @test mask[3] == true
+            @test mask[3] == false
         end
 
-        @testset "Inf input element is marked true" begin
+        @testset "Inf input element is marked false" begin
             data = vcat(ones(Float64, 20), [Inf])
             mask = sigma_clip_mask(data;
                 center=fast_median!, spread=mad_std!)
-            @test mask[end] == true
+            @test mask[end] == false
         end
 
         @testset "result size matches input" begin
@@ -490,8 +569,8 @@ end
             target = falses(51)
             sigma_clip_mask!(data, target;
                 center=fast_median!, spread=mad_std!)
-            @test target[end] == true
-            @test count(target) == 1
+            @test target[end] == false
+            @test count(target) == 50
         end
 
         @testset "sigma_clip_mask! returns target" begin
@@ -510,7 +589,7 @@ end
             clipped = sigma_clip(data;
                 center=fast_median!, spread=mad_std!)
             for i in eachindex(data)
-                @test mask[i] == isnan(clipped[i])
+                @test mask[i] == !isnan(clipped[i])
             end
         end
 
@@ -588,7 +667,7 @@ end
                 data[idx] = 1000.0
                 mask = sigma_clip_mask(data;
                     center=fast_median!, spread=mad_std!)
-                @test mask[idx] == true
+                @test mask[idx] == false
             end
         end
 
@@ -598,21 +677,21 @@ end
                 center=fast_median!, spread=mad_std!)
             # For σ=3 and normal data, theoretical false positive rate ≈ 0.27%
             # We allow up to 1% to be safe
-            @test count(mask) / length(data) < 0.01
+            @test 1 - count(mask) / length(data) < 0.01
         end
 
         @testset "multiple outliers at different magnitudes" begin
             data = vcat(zeros(Float64, 97), [10.0, 100.0, 1000.0])
             mask = sigma_clip_mask(data;
                 center=fast_median!, spread=mad_std!)
-            @test mask[98] && mask[99] && mask[100]
+            @test !mask[98] && !mask[99] && !mask[100]
         end
 
         @testset "outliers at both ends of distribution" begin
             data = vcat([-200.0], zeros(Float64, 98), [200.0])
             mask = sigma_clip_mask(data;
                 center=fast_median!, spread=mad_std!)
-            @test mask[1] && mask[end]
+            @test !mask[1] && !mask[end]
         end
 
         @testset "convergence: iterative clipping catches cascading outliers" begin
@@ -622,8 +701,8 @@ end
                 center=fast_median!, spread=mad_std!)
             mask_5 = sigma_clip_mask(data; maxiter=5,
                 center=fast_median!, spread=mad_std!)
-            # More iterations ⟹ at least as many outliers found
-            @test count(mask_5) >= count(mask_1)
+            # More iterations ⟹ at most as many good pixels remain
+            @test count(mask_5) <= count(mask_1)
         end
 
         @testset "2-D array: each element treated independently" begin
@@ -631,8 +710,8 @@ end
             img[3, 7] = 999.0
             mask = sigma_clip_mask(img;
                 center=fast_median!, spread=mad_std!)
-            @test mask[3, 7] == true
-            @test count(mask) == 1
+            @test mask[3, 7] == false
+            @test count(mask) == 99
         end
 
     end # outlier detection correctness

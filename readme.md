@@ -57,9 +57,9 @@ clean = sigma_clip(data)
 # In-place: modifies data directly
 sigma_clip!(data)
 
-# Mask only: returns a BitArray (true = outlier or non-finite)
+# Mask only: returns a BitArray (true = good / retained pixel)
 mask = sigma_clip_mask(data)
-clean = data[.!mask]
+clean = data[mask]
 ```
 
 ---
@@ -78,13 +78,13 @@ In-place version. Replaces outliers in `x` with `NaN`. Requires
 
 ### `sigma_clip_mask(x; kwargs...) -> BitArray`
 
-Returns a boolean mask where `true` marks a clipped or non-finite value. The
-input array is never modified.
+Returns a boolean mask where `true` marks a finite, retained value. The input
+array is never modified.
 
 ### `sigma_clip_mask!(x, target; kwargs...) -> target`
 
-Writes the outlier flags into a pre-allocated `BitArray` `target` of the same
-shape as `x`.
+Writes pixel-validity flags into a pre-allocated `BitArray` `target` of the
+same shape as `x`.
 
 ### `SigmaClip.sigma_clip_bounds(x; kwargs...) -> (lb, ub)`
 
@@ -105,8 +105,8 @@ println("outliers: x < $lb  or  x > $ub")
 | `maxiter` | `5` | Maximum number of clipping iterations. Pass `-1` to run until convergence. |
 | `center` | `fast_median!` | Centre estimator. Any callable `f(v::AbstractVector) -> scalar`. |
 | `spread` | `mad_std!` | Dispersion estimator. Any callable `f(v::AbstractVector) -> scalar`. |
-| `exclude` | `nothing` | Boolean array selecting points excluded from bound computation. |
-| `workspace` | `nothing` | Pre-allocated [`SigmaClipWorkspace`](#zero-allocation-hot-loops). |
+| `exclude` | `nothing` | Boolean array selecting points excluded from bound computation; unlike `sigma_clip_mask`, here `true` means "exclude". |
+| `workspace` | `nothing` | Pre-allocated workspace for allocation-free operation; accepts [`SigmaClipWorkspace`](#zero-allocation-hot-loops) or a custom type implementing `SigmaClip.workspace_buffer` and `SigmaClip.workspace_auxbuffer`. |
 
 ---
 
@@ -196,7 +196,8 @@ sigma_clip!(data; spread=iqr_spread)
 When applying sigma clipping to thousands of arrays (e.g. every row of a 2-D
 image), the internal buffer allocations can become a bottleneck. Allocate a
 `SigmaClipWorkspace` once and pass it via the `workspace` keyword to make every
-subsequent call allocation-free.
+subsequent call allocation-free. External packages may also pass a custom
+workspace type, as long as it exposes the two buffers SigmaClip needs.
 
 ```julia
 # Allocate once — must be at least as long as each array being processed
@@ -226,6 +227,33 @@ SigmaClipWorkspace(my_array)     # T and length inferred from the array
 
 If you pass a workspace whose buffer is shorter than the input array, an
 `ArgumentError` is thrown immediately before any computation begins.
+
+### Custom workspace protocol
+
+Custom workspace types participate in the same API by implementing two methods:
+
+```julia
+SigmaClip.workspace_buffer(ws)    # main packed-data buffer
+SigmaClip.workspace_auxbuffer(ws) # auxiliary MAD buffer
+```
+
+Both accessors must return mutable `AbstractVector`s with the exact floating
+type SigmaClip requires for the input being processed (`Float32` for `Float32`
+input, `Float64` for integer input, etc.) and length at least `length(x)`.
+
+```julia
+struct ExternalWorkspace{T}
+    tmp1::Vector{T}
+    tmp2::Vector{T}
+    tmp3::Vector{T}
+end
+
+SigmaClip.workspace_buffer(ws::ExternalWorkspace) = ws.tmp2
+SigmaClip.workspace_auxbuffer(ws::ExternalWorkspace) = ws.tmp3
+
+ws = ExternalWorkspace(zeros(Float64, 1024), zeros(Float64, 1024), zeros(Float64, 1024))
+sigma_clip!(data; workspace=ws)
+```
 
 ---
 

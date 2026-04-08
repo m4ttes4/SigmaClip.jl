@@ -6,8 +6,8 @@ export sigma_clip_mask, sigma_clip_mask!, sigma_clip!, sigma_clip
 export SigmaClipWorkspace
 export fast_median!, mad_std!
 
-const BAD_PIXEL = true
-const GOOD_PIXEL = false
+const BAD_PIXEL = false
+const GOOD_PIXEL = true
 
 
 # ─── Reducer specialisations ──────────────────────────────────────────────────
@@ -24,6 +24,10 @@ const GOOD_PIXEL = false
 
 Pre-allocated scratch space for sigma clipping.  Pass one instance via the
 `workspace` keyword to eliminate all dynamic allocations in hot loops.
+`SigmaClipWorkspace` is the built-in implementation of SigmaClip's public
+workspace protocol; external packages may pass their own workspace types by
+implementing [`SigmaClip.workspace_buffer`](@ref) and
+[`SigmaClip.workspace_auxbuffer`](@ref).
 
 # Fields
 - `buf` — working copy of the valid elements; compacted in-place each iteration.
@@ -49,6 +53,29 @@ struct SigmaClipWorkspace{T<:AbstractFloat}
     aux::Vector{T}
 end
 
+"""
+    SigmaClip.workspace_buffer(ws) -> AbstractVector
+
+Return the main mutable scratch buffer used by SigmaClip for packed valid data.
+Custom workspace types can participate in the allocation-free API by
+implementing this method and [`SigmaClip.workspace_auxbuffer`](@ref).
+"""
+workspace_buffer(ws) = throw(ArgumentError(
+    "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"))
+
+"""
+    SigmaClip.workspace_auxbuffer(ws) -> AbstractVector
+
+Return the auxiliary mutable scratch buffer used by SigmaClip's specialised
+`mad_std!` path. Custom workspace types can participate in the allocation-free
+API by implementing this method and [`SigmaClip.workspace_buffer`](@ref).
+"""
+workspace_auxbuffer(ws) = throw(ArgumentError(
+    "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"))
+
+workspace_buffer(ws::SigmaClipWorkspace) = ws.buf
+workspace_auxbuffer(ws::SigmaClipWorkspace) = ws.aux
+
 SigmaClipWorkspace(T::Type{<:AbstractFloat}, n::Int) =
     SigmaClipWorkspace{T}(Vector{T}(undef, n), Vector{T}(undef, n))
 
@@ -61,13 +88,24 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T<:AbstractFloat}
     SigmaClipWorkspace(T, n)
 end
-@inline function _ensure_workspace(::Type{T}, n::Int, ws::SigmaClipWorkspace{W}) where {T<:AbstractFloat,W<:AbstractFloat}
-    W === T || throw(ArgumentError(
-        "workspace type mismatch: expected SigmaClipWorkspace{$T}, got $(typeof(ws))"))
-    length(ws.buf) >= n || throw(ArgumentError(
-        "workspace buffer too short: length $(length(ws.buf)) < required $n"))
-    length(ws.aux) >= n || throw(ArgumentError(
-        "workspace aux buffer too short: length $(length(ws.aux)) < required $n"))
+
+@inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T<:AbstractFloat}
+    buf isa AbstractVector || throw(ArgumentError(
+        "workspace $role must be an AbstractVector, got $(typeof(buf))"))
+    eltype(buf) === T || throw(ArgumentError(
+        "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"))
+    Base.ismutable(buf) || throw(ArgumentError(
+        "workspace $role must be mutable, got $(typeof(buf))"))
+    length(buf) >= n || throw(ArgumentError(
+        "workspace $role too short: length $(length(buf)) < required $n"))
+    nothing
+end
+
+@inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T<:AbstractFloat}
+    buf = workspace_buffer(ws)
+    aux = workspace_auxbuffer(ws)
+    _validate_workspace_buffer(buf, T, n, "buffer")
+    _validate_workspace_buffer(aux, T, n, "aux buffer")
     ws
 end
 
@@ -171,7 +209,7 @@ end
 # Contract:
 #   • may reorder buf[1:n] (quickselect is partial, values are preserved)
 #   • must NOT overwrite buf[1:n] with unrelated data — compaction reads it next
-#   • may freely read and write ws.aux[1:n]
+#   • may freely read and write aux[1:n]
 #
 # Three specialisations, resolved at compile time:
 #
@@ -189,16 +227,17 @@ end
 #
 @inline function _compute_stats(::typeof(fast_median!), ::typeof(mad_std!),
     n::Int,
-    ws::SigmaClipWorkspace{T}) where {T}
-    
-    buf = ws.buf
+    ws)
+    buf = workspace_buffer(ws)
+    aux = workspace_auxbuffer(ws)
+    T = eltype(buf)
     bv = @inbounds view(buf, 1:n)
     m = fast_median!(bv)                   # quickselect on buf — buf reordered
 
     @inbounds for i in 1:n                  # write deviations to aux, buf intact
-        ws.aux[i] = abs(buf[i] - m)
+        aux[i] = abs(buf[i] - m)
     end
-    av = @inbounds view(ws.aux, 1:n)
+    av = @inbounds view(aux, 1:n)
     mad = fast_median!(av)                  # quickselect on aux
 
     return m, mad * T(1.4826022185056018)
@@ -211,8 +250,8 @@ end
 #
 @inline function _compute_stats(::typeof(fast_median!), spread_f,
     n::Int,
-    ws::SigmaClipWorkspace{T}) where {T}
-    buf = ws.buf
+    ws)
+    buf = workspace_buffer(ws)
     bv = @inbounds view(buf, 1:n)
     m = fast_median!(bv)
     s = spread_f(bv)
@@ -225,8 +264,8 @@ end
 #
 @inline function _compute_stats(center_f, spread_f,
     n::Int,
-    ws::SigmaClipWorkspace{T}) where T
-    buf = ws.buf
+    ws)
+    buf = workspace_buffer(ws)
     bv = @inbounds view(buf, 1:n)
     return center_f(bv), spread_f(bv)
 end
@@ -237,24 +276,26 @@ end
 function _sigma_clip_bounds_impl(
     x::AbstractArray{T},
     exclude::M,
-    ws::SigmaClipWorkspace{W},
+    ws,
     sigma_lower,
     sigma_upper,
     center::C,
     spread::S,
     maxiter::Int,
-) where {T,M,W<:AbstractFloat,C,S}
+) where {T,M,C,S}
 
     have_exclude = !isnothing(exclude)
+    W = eltype(workspace_buffer(ws))
     sigma_lower = convert(W, sigma_lower)
     sigma_upper = convert(W, sigma_upper)
+    buf = workspace_buffer(ws)
 
-    # Pack valid (finite, not excluded) elements into ws.buf
+    # Pack valid (finite, not excluded) elements into the workspace buffer
     n = 0
     @inbounds for i in eachindex(x)
-        if (!have_exclude || exclude[i] != BAD_PIXEL) && isfinite(x[i])
+        if (!have_exclude || !exclude[i]) && isfinite(x[i])
             n += 1
-            ws.buf[n] = x[i]
+            buf[n] = x[i]
         end
     end
 
@@ -276,10 +317,10 @@ function _sigma_clip_bounds_impl(
         # In-place compaction — write index <= read index always holds
         new_count = 0
         @inbounds for i in 1:current
-            val = ws.buf[i]
+            val = buf[i]
             if val >= lower_bound && val <= upper_bound
                 new_count += 1
-                ws.buf[new_count] = val
+                buf[new_count] = val
             end
         end
 
@@ -294,7 +335,7 @@ end
 
 @inline function _sigma_clip_bounds_checked(
     x::AbstractArray{T},
-    workspace::Union{Nothing,SigmaClipWorkspace},
+    workspace,
     exclude::Union{Nothing,AbstractArray{Bool}},
     sigma_lower,
     sigma_upper,
@@ -314,34 +355,38 @@ end
 """
     sigma_clip_mask(x; kwargs...) -> BitArray
 
-Identify outliers in `x` via iterative sigma clipping.  Returns a `BitArray`
-where `true` marks a non-finite or clipped value.  `x` is never modified.
+Identify valid pixels in `x` via iterative sigma clipping.  Returns a `BitArray`
+where `true` marks a finite, non-clipped value.  `x` is never modified.
 
 # Keyword Arguments
-- `workspace=nothing`  — [`SigmaClipWorkspace`](@ref) for allocation-free operation.
+- `workspace=nothing`  — pre-allocated workspace for allocation-free operation;
+                         accepts [`SigmaClipWorkspace`](@ref) or any custom type
+                         implementing [`SigmaClip.workspace_buffer`](@ref) and
+                         [`SigmaClip.workspace_auxbuffer`](@ref).
 - `sigma_lower=3`      — lower rejection threshold (multiples of dispersion).
 - `sigma_upper=3`      — upper rejection threshold.
 - `maxiter=5`          — maximum iterations; `-1` means run until convergence.
 - `center=fast_median!` — centre estimator; any `f(v::AbstractVector) -> scalar`.
 - `spread=mad_std!`     — dispersion estimator; any `f(v::AbstractVector) -> scalar`.
-- `exclude=nothing`    — boolean array selecting points excluded from bound computation.
+- `exclude=nothing`    — boolean array selecting points excluded from bound computation;
+                         unlike the returned mask, here `true` means "exclude".
 
 # Example
 ```julia
 data = randn(1000); data[1] = 99.0
-clean = data[.!sigma_clip_mask(data)]                       # default
-clean = data[.!sigma_clip_mask(data; spread=mad_std!)]     # robust MAD
+clean = data[sigma_clip_mask(data)]                        # default
+clean = data[sigma_clip_mask(data; spread=mad_std!)]      # robust MAD
 ```
 """
 function sigma_clip_mask(x::AbstractArray{T};
-    workspace::Union{Nothing,SigmaClipWorkspace}=nothing,
+    workspace=nothing,
     exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
     sigma_lower=3,
     sigma_upper=3,
     center::C=fast_median!,
     spread::S=mad_std!,
     maxiter::Int=5) where {T,C,S}
-    target = trues(size(x))
+    target = falses(size(x))
     sigma_clip_mask!(x, target;
         workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
 end
@@ -349,12 +394,12 @@ end
 """
     sigma_clip_mask!(x, target; kwargs...) -> target
 
-In-place mask variant: writes outlier flags into the pre-allocated `BitArray`
+In-place mask variant: writes pixel-validity flags into the pre-allocated `BitArray`
 `target` (same shape as `x`).  Same keyword arguments as [`sigma_clip_mask`](@ref).
 """
 function sigma_clip_mask!(x::AbstractArray{T},
     target::AbstractArray{Bool};
-    workspace::Union{Nothing,SigmaClipWorkspace}=nothing,
+    workspace=nothing,
     exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
     sigma_lower=3,
     sigma_upper=3,
@@ -366,7 +411,7 @@ function sigma_clip_mask!(x::AbstractArray{T},
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
     @inbounds for i in eachindex(x)
         val = x[i]
-        target[i] = !isfinite(val) || val < lb || val > ub
+        target[i] = isfinite(val) && val >= lb && val <= ub
     end
     return target
 end
@@ -388,7 +433,7 @@ sigma_clip!(data; center=mean, spread=std)  # fully custom
 ```
 """
 function sigma_clip!(x::AbstractArray{T};
-    workspace::Union{Nothing,SigmaClipWorkspace}=nothing,
+    workspace=nothing,
     exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
     sigma_lower=3,
     sigma_upper=3,
@@ -429,7 +474,7 @@ println("outliers: x < \$lb  or  x > \$ub")
 ```
 """
 function sigma_clip_bounds(x::AbstractArray{T};
-    workspace::Union{Nothing,SigmaClipWorkspace}=nothing,
+    workspace=nothing,
     exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
     sigma_lower=3,
     sigma_upper=3,
