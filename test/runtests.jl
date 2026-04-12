@@ -45,6 +45,42 @@ end
 SigmaClip.workspace_buffer(ws::ShortAuxWorkspace) = ws.buf
 SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
 
+struct ReinterpretedWorkspace{B,A}
+    buf::B
+    aux::A
+end
+
+SigmaClip.workspace_buffer(ws::ReinterpretedWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::ReinterpretedWorkspace) = ws.aux
+
+struct TestQuantity{T<:AbstractFloat} <: Number
+    value::T
+end
+
+Base.convert(::Type{TestQuantity{T}}, x::TestQuantity) where {T} =
+    TestQuantity{T}(convert(T, x.value))
+Base.convert(::Type{TestQuantity{T}}, x::Real) where {T} =
+    TestQuantity{T}(convert(T, x))
+Base.promote_rule(::Type{TestQuantity{T}}, ::Type{S}) where {T,S<:Real} =
+    TestQuantity{promote_type(T, S)}
+Base.zero(::Type{TestQuantity{T}}) where {T} = TestQuantity{T}(zero(T))
+Base.zero(x::TestQuantity) = zero(typeof(x))
+Base.oneunit(::Type{TestQuantity{T}}) where {T} = TestQuantity{T}(oneunit(T))
+Base.:+(a::TestQuantity, b::TestQuantity) =
+    TestQuantity(a.value + b.value)
+Base.:-(a::TestQuantity, b::TestQuantity) =
+    TestQuantity(a.value - b.value)
+Base.:-(a::TestQuantity) = TestQuantity(-a.value)
+Base.:*(a::TestQuantity, b::Real) = TestQuantity(a.value * b)
+Base.:*(a::Real, b::TestQuantity) = TestQuantity(a * b.value)
+Base.:/(a::TestQuantity, b::Real) = TestQuantity(a.value / b)
+Base.abs(a::TestQuantity) = TestQuantity(abs(a.value))
+Base.isless(a::TestQuantity, b::TestQuantity) = isless(a.value, b.value)
+Base.:(==)(a::TestQuantity, b::TestQuantity) = a.value == b.value
+Base.isfinite(a::TestQuantity) = isfinite(a.value)
+Base.isnan(a::TestQuantity) = isnan(a.value)
+value(a::TestQuantity) = a.value
+
 # @testset "SigmaClip.jl" begin
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -115,6 +151,13 @@ SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
             ws = SigmaClipWorkspace(v)
             @test ws isa SigmaClipWorkspace{Float32}
             @test length(ws.buf) == 50
+        end
+
+        @testset "constructor from quantity-like array preserves units" begin
+            v = TestQuantity{Float64}.([1.0, 2.0, 3.0])
+            ws = SigmaClipWorkspace(v)
+            @test ws isa SigmaClipWorkspace{TestQuantity{Float64}}
+            @test length(ws.buf) == 3
         end
 
         @testset "constructor from Integer array promotes to Float64" begin
@@ -281,6 +324,21 @@ SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
             @test_throws ArgumentError sigma_clip!(data; workspace=short_aux)
         end
 
+        @testset "reinterpreted quantity workspace is accepted" begin
+            data = TestQuantity{Float64}.(vcat(zeros(8), [100.0]))
+            raw_buf = Vector{Float64}(undef, length(data))
+            raw_aux = Vector{Float64}(undef, length(data))
+            ws = ReinterpretedWorkspace(
+                reinterpret(TestQuantity{Float64}, raw_buf),
+                reinterpret(TestQuantity{Float64}, raw_aux))
+
+            lb, ub = SigmaClip.sigma_clip_bounds(data; workspace=ws)
+
+            @test lb isa TestQuantity{Float64}
+            @test ub isa TestQuantity{Float64}
+            @test value(ub) < 100.0
+        end
+
     end # SigmaClipWorkspace
 
 
@@ -360,6 +418,18 @@ SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
             @test ub < 10.0
             # very permissive lower threshold: lb is well below -10.0
             @test lb < -10.0
+        end
+
+        @testset "quantity-like reinterpreted input preserves bounds units" begin
+            raw = vcat(zeros(8), [100.0])
+            data = reinterpret(TestQuantity{Float64}, raw)
+
+            lb, ub = SigmaClip.sigma_clip_bounds(data)
+
+            @test lb isa TestQuantity{Float64}
+            @test ub isa TestQuantity{Float64}
+            @test value(lb) == 0.0
+            @test value(ub) == 0.0
         end
 
     end # sigma_clip_bounds
@@ -481,6 +551,14 @@ SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
             @test isnan(data[end])
         end
 
+        @testset "quantity-like input is clipped with quantity NaN" begin
+            data = TestQuantity{Float64}.(vcat(zeros(8), [100.0]))
+            sigma_clip!(data)
+
+            @test isnan(data[end])
+            @test all(==(TestQuantity{Float64}(0.0)), data[1:end-1])
+        end
+
     end # sigma_clip!
 
 
@@ -578,6 +656,15 @@ SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
             target = falses(20)
             result = sigma_clip_mask!(data, target)
             @test result === target
+        end
+
+        @testset "quantity-like reinterpreted input mask" begin
+            raw = vcat(zeros(8), [100.0])
+            data = reinterpret(TestQuantity{Float64}, raw)
+            mask = sigma_clip_mask(data)
+
+            @test mask[end] == false
+            @test count(mask) == 8
         end
 
         @testset "consistency: mask NaN iff sigma_clip! returns NaN" begin

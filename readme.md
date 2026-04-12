@@ -66,15 +66,16 @@ clean = data[mask]
 
 ## API reference
 
-### `sigma_clip(x; kwargs...) -> Array{<:AbstractFloat}`
+### `sigma_clip(x; kwargs...) -> Array{<:Number}`
 
 Out-of-place sigma clipping. Returns a copy of `x` with outliers replaced by
-`NaN`. Integer arrays are promoted to `Float64`.
+`NaN`. Integer arrays are promoted to `Float64`; numeric arrays with units keep
+their element type when it can represent `NaN`.
 
 ### `sigma_clip!(x; kwargs...) -> x`
 
 In-place version. Replaces outliers in `x` with `NaN`. Requires
-`x <: AbstractArray{<:AbstractFloat}`.
+an array whose element type can represent `NaN`.
 
 ### `sigma_clip_mask(x; kwargs...) -> BitArray`
 
@@ -237,9 +238,10 @@ SigmaClip.workspace_buffer(ws)    # main packed-data buffer
 SigmaClip.workspace_auxbuffer(ws) # auxiliary MAD buffer
 ```
 
-Both accessors must return mutable `AbstractVector`s with the exact floating
+Both accessors must return writable `AbstractVector`s with the exact numeric
 type SigmaClip requires for the input being processed (`Float32` for `Float32`
-input, `Float64` for integer input, etc.) and length at least `length(x)`.
+input, the quantity type for unitful input, `Float64` for integer input, etc.)
+and length at least `length(x)`.
 
 ```julia
 struct ExternalWorkspace{T}

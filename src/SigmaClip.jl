@@ -20,7 +20,7 @@ const GOOD_PIXEL = true
 # ─── Workspace ────────────────────────────────────────────────────────────────
 
 """
-    SigmaClipWorkspace{T <: AbstractFloat}
+    SigmaClipWorkspace{T <: Number}
 
 Pre-allocated scratch space for sigma clipping.  Pass one instance via the
 `workspace` keyword to eliminate all dynamic allocations in hot loops.
@@ -37,7 +37,7 @@ implementing [`SigmaClip.workspace_buffer`](@ref) and
 
 # Constructors
 
-    SigmaClipWorkspace(T, n)     # explicit floating-point type and capacity
+    SigmaClipWorkspace(T, n)     # explicit numeric type and capacity
     SigmaClipWorkspace(x)        # T and n inferred from the input array
 
 # Example
@@ -48,7 +48,7 @@ for row in eachrow(image)
 end
 ```
 """
-struct SigmaClipWorkspace{T<:AbstractFloat}
+struct SigmaClipWorkspace{T<:Number}
     buf::Vector{T}
     aux::Vector{T}
 end
@@ -76,32 +76,48 @@ workspace_auxbuffer(ws) = throw(ArgumentError(
 workspace_buffer(ws::SigmaClipWorkspace) = ws.buf
 workspace_auxbuffer(ws::SigmaClipWorkspace) = ws.aux
 
-SigmaClipWorkspace(T::Type{<:AbstractFloat}, n::Int) =
+SigmaClipWorkspace(T::Type{<:Number}, n::Int) =
     SigmaClipWorkspace{T}(Vector{T}(undef, n), Vector{T}(undef, n))
 
-SigmaClipWorkspace(x::AbstractArray{T}) where {T<:AbstractFloat} =
+SigmaClipWorkspace(x::AbstractArray{T}) where {T<:Number} =
     SigmaClipWorkspace(T, length(x))
 
 SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
     SigmaClipWorkspace(Float64, length(x))
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T<:AbstractFloat}
+@inline _workspace_eltype(::Type{T}) where {T<:AbstractFloat} = T
+@inline _workspace_eltype(::Type{<:Integer}) = Float64
+@inline _workspace_eltype(::Type{T}) where {T<:Number} = T
+
+@inline _scale_factor(::Type{T}, x) where {T<:AbstractFloat} = convert(T, x)
+@inline _scale_factor(::Type{<:Number}, x) = float(x)
+
+@inline _nan_value(::Type{T}) where {T<:AbstractFloat} = T(NaN)
+@inline _nan_value(::Type{T}) where {T<:Number} = convert(T, NaN * oneunit(T))
+
+@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T<:Number}
     SigmaClipWorkspace(T, n)
 end
 
-@inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T<:AbstractFloat}
+@inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T<:Number}
     buf isa AbstractVector || throw(ArgumentError(
         "workspace $role must be an AbstractVector, got $(typeof(buf))"))
     eltype(buf) === T || throw(ArgumentError(
         "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"))
-    Base.ismutable(buf) || throw(ArgumentError(
-        "workspace $role must be mutable, got $(typeof(buf))"))
     length(buf) >= n || throw(ArgumentError(
         "workspace $role too short: length $(length(buf)) < required $n"))
+    # if n > 0
+    #     try
+    #         buf[firstindex(buf)] = zero(T)
+    #     catch err
+    #         throw(ArgumentError(
+    #             "workspace $role must support setindex!, got $(typeof(buf)): $err"))
+    #     end
+    # end
     nothing
 end
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T<:AbstractFloat}
+@inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T<:Number}
     buf = workspace_buffer(ws)
     aux = workspace_auxbuffer(ws)
     _validate_workspace_buffer(buf, T, n, "buffer")
@@ -153,7 +169,7 @@ function fast_median!(a::AbstractVector{T}) where T
     n = length(a)
     n == 0 && return zero(T)
     o = firstindex(a) - 1
-    iseven(n) ? T(0.5) * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
+    iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
     _kth_smallest!(a, o + (n + 1) ÷ 2)
 end
 
@@ -177,7 +193,7 @@ median is computed once and shared with the MAD calculation.
 
 See also: [`fast_median!`](@ref)
 """
-function mad_std!(a::AbstractVector{T}) where {T<:AbstractFloat}
+function mad_std!(a::AbstractVector{T}) where {T<:Number}
     n = length(a)
     n == 0 && return zero(T)
 
@@ -186,7 +202,7 @@ function mad_std!(a::AbstractVector{T}) where {T<:AbstractFloat}
     @inbounds for i in eachindex(a)
         aux[i] = abs(a[i] - m)
     end
-    fast_median!(aux) * T(1.4826022185056018)
+    fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
 end
 
 function mad_std!(a::AbstractVector{<:Integer})
@@ -240,7 +256,7 @@ end
     av = @inbounds view(aux, 1:n)
     mad = fast_median!(av)                  # quickselect on aux
 
-    return m, mad * T(1.4826022185056018)
+    return m, mad * _scale_factor(T, 1.4826022185056018)
 end
 
 # Specialisation 2 — (FastMedian, generic spread)
@@ -286,8 +302,8 @@ function _sigma_clip_bounds_impl(
 
     have_exclude = !isnothing(exclude)
     W = eltype(workspace_buffer(ws))
-    sigma_lower = convert(W, sigma_lower)
-    sigma_upper = convert(W, sigma_upper)
+    sigma_lower = _scale_factor(W, sigma_lower)
+    sigma_upper = _scale_factor(W, sigma_upper)
     buf = workspace_buffer(ws)
 
     # Pack valid (finite, not excluded) elements into the workspace buffer
@@ -343,9 +359,9 @@ end
     spread::S,
     maxiter::Int,
 ) where {T,C,S}
-    ws = _ensure_workspace(float(T), length(x), workspace)
+    ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
     _sigma_clip_bounds_impl(x, exclude, ws,
-        float(sigma_lower), float(sigma_upper),
+        sigma_lower, sigma_upper,
         center, spread, maxiter)
 end
 
@@ -420,7 +436,7 @@ end
     sigma_clip!(x; kwargs...) -> x
 
 In-place sigma clipping: replaces outliers in `x` with `NaN`.
-Requires `x <: AbstractArray{<:AbstractFloat}`.
+Requires an array that can represent `NaN`.
 
 Same keyword arguments as [`sigma_clip_mask`](@ref).
 
@@ -439,27 +455,32 @@ function sigma_clip!(x::AbstractArray{T};
     sigma_upper=3,
     center::C=fast_median!,
     spread::S=mad_std!,
-    maxiter::Int=5) where {T<:AbstractFloat,C,S}
+    maxiter::Int=5) where {T<:Number,C,S}
 
     lb, ub = _sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
+    nan = _nan_value(T)
     @inbounds for i in eachindex(x)
         val = x[i]
         if !isfinite(val) || val < lb || val > ub
-            x[i] = T(NaN)
+            x[i] = nan
         end
     end
     return x
 end
 
+sigma_clip!(x::AbstractArray{<:Integer}; kw...) =
+    throw(MethodError(sigma_clip!, (x,)))
+
 """
-    sigma_clip(x; kwargs...) -> Array{<:AbstractFloat}
+    sigma_clip(x; kwargs...) -> Array{<:Number}
 
 Out-of-place variant.  Returns a copy of `x` with outliers replaced by `NaN`.
-Integer arrays are promoted to `Float64`.
+Integer arrays are promoted to `Float64`; numeric arrays with units keep their
+element type when it can represent `NaN`.
 Same keyword arguments as [`sigma_clip!`](@ref).
 """
-sigma_clip(x::AbstractArray{<:AbstractFloat}; kw...) = sigma_clip!(copy(x); kw...)
+sigma_clip(x::AbstractArray{<:Number}; kw...) = sigma_clip!(copy(x); kw...)
 sigma_clip(x::AbstractArray{<:Integer}; kw...) = sigma_clip!(float.(x); kw...)
 
 """
