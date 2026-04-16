@@ -10,6 +10,11 @@ const BAD_PIXEL = false
 const GOOD_PIXEL = true
 
 
+# ─── Statistics reducers ─────────────────────────────────────────────────────
+
+include("stats.jl")
+
+
 # ─── Reducer specialisations ──────────────────────────────────────────────────
 #
 # Reducer functions are singleton objects, so _compute_stats can still
@@ -31,9 +36,8 @@ implementing [`SigmaClip.workspace_buffer`](@ref) and
 
 # Fields
 - `buf` — working copy of the valid elements; compacted in-place each iteration.
-- `aux` — auxiliary buffer; used only when `spread=mad_std!` to hold
-  `|buf[i] − median|` without overwriting `buf` (which is still needed for the
-  in-place compaction step that follows statistics computation).
+- `aux` — auxiliary buffer; used by `mad_std!` and available to workspace-aware
+  reducers through [`SigmaClip.workspace_auxbuffer`](@ref).
 
 # Constructors
 
@@ -57,8 +61,9 @@ end
     SigmaClip.workspace_buffer(ws) -> AbstractVector
 
 Return the main mutable scratch buffer used by SigmaClip for packed valid data.
-Custom workspace types can participate in the allocation-free API by
-implementing this method and [`SigmaClip.workspace_auxbuffer`](@ref).
+Custom workspace types can participate in the allocation-free API by returning
+a writable, 1-indexed `AbstractVector` and implementing
+[`SigmaClip.workspace_auxbuffer`](@ref).
 """
 workspace_buffer(ws) = throw(ArgumentError(
     "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"))
@@ -67,8 +72,9 @@ workspace_buffer(ws) = throw(ArgumentError(
     SigmaClip.workspace_auxbuffer(ws) -> AbstractVector
 
 Return the auxiliary mutable scratch buffer used by SigmaClip's specialised
-`mad_std!` path. Custom workspace types can participate in the allocation-free
-API by implementing this method and [`SigmaClip.workspace_buffer`](@ref).
+`mad_std!` path and workspace-aware statistics. Custom workspace types can
+participate in the allocation-free API by returning a writable, 1-indexed
+`AbstractVector` and implementing [`SigmaClip.workspace_buffer`](@ref).
 """
 workspace_auxbuffer(ws) = throw(ArgumentError(
     "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"))
@@ -95,6 +101,12 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline _nan_value(::Type{T}) where {T<:AbstractFloat} = T(NaN)
 @inline _nan_value(::Type{T}) where {T<:Number} = convert(T, NaN * oneunit(T))
 
+@inline _same_axes(a, b) = axes(a) == axes(b)
+# @inline _is_one_indexed(v) = firstindex(v) == 1
+@inline _is_nonnegative_finite(x) = isfinite(x) && x >= zero(x)
+@inline _validate_axes(name, a, x) = _same_axes(a, x) || throw(ArgumentError("$name axes mismatch: expected $(axes(x)), got $(axes(a))"))
+@inline _validate_sigma(name, value) = _is_nonnegative_finite(value) || throw(ArgumentError("$name must be finite and non-negative, got $value"))
+
 @inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T<:Number}
     SigmaClipWorkspace(T, n)
 end
@@ -106,6 +118,8 @@ end
         "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"))
     length(buf) >= n || throw(ArgumentError(
         "workspace $role too short: length $(length(buf)) < required $n"))
+    # _is_one_indexed(buf) || throw(ArgumentError(
+    #     "workspace $role must be 1-indexed, got firstindex $(firstindex(buf))"))
     # if n > 0
     #     try
     #         buf[firstindex(buf)] = zero(T)
@@ -126,167 +140,6 @@ end
 end
 
 
-# ─── Quickselect median ───────────────────────────────────────────────────────
-
-function _kth_smallest!(a::AbstractVector{T}, k::Int) where T
-    l = firstindex(a)
-    r = lastindex(a)
-    @inbounds while l < r
-        pivot = a[k]
-        i, j = l, r
-        while true
-            while a[i] < pivot
-                i += 1
-            end
-            while pivot < a[j]
-                j -= 1
-            end
-            if i <= j
-                a[i], a[j] = a[j], a[i]
-                i += 1
-                j -= 1
-            end
-            i > j && break
-        end
-        j < k && (l = i)
-        k < i && (r = j)
-    end
-    return a[k]
-end
-
-"""
-    fast_median!(a::AbstractVector) -> eltype(a)
-
-Compute the median of `a` in O(n) average time using an in-place quickselect
-(Wirth's algorithm).  **Modifies the ordering of `a`** but preserves all values.
-Returns `zero(eltype(a))` for empty input.
-
-Allocation-free; roughly 2–3× faster than `Statistics.median` on random data.
-
-See also: [`mad_std!`](@ref)
-"""
-function fast_median!(a::AbstractVector{T}) where T
-    n = length(a)
-    n == 0 && return zero(T)
-    o = firstindex(a) - 1
-    iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
-    _kth_smallest!(a, o + (n + 1) ÷ 2)
-end
-
-function fast_median!(a::AbstractVector{<:Integer})
-    n = length(a)
-    n == 0 && return 0.0
-    o = firstindex(a) - 1
-    iseven(n) ? 0.5 * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
-    _kth_smallest!(a, o + (n + 1) ÷ 2)
-end
-
-"""
-    mad_std!(a::AbstractVector)
-
-Compute the Median Absolute Deviation of `a` in-place, scaled by 1.4826 to
-match the standard deviation of a normal distribution.
-
-When passed as `spread=mad_std!`, SigmaClip selects the built-in robust
-dispersion estimator. When combined with `center=fast_median!` (default), the
-median is computed once and shared with the MAD calculation.
-
-See also: [`fast_median!`](@ref)
-"""
-function mad_std!(a::AbstractVector{T}) where {T<:Number}
-    n = length(a)
-    n == 0 && return zero(T)
-
-    m = fast_median!(a)
-    aux = similar(a)
-    @inbounds for i in eachindex(a)
-        aux[i] = abs(a[i] - m)
-    end
-    fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
-end
-
-function mad_std!(a::AbstractVector{<:Integer})
-    n = length(a)
-    n == 0 && return 0.0
-
-    m = fast_median!(a)
-    aux = Vector{Float64}(undef, n)
-    @inbounds for i in eachindex(a)
-        aux[i] = abs(a[i] - m)
-    end
-    fast_median!(aux) * 1.4826022185056018
-end
-
-
-# ─── _compute_stats ───────────────────────────────────────────────────────────
-#
-# Returns (centre, dispersion) for the n values packed in buf[1:n].
-#
-# Contract:
-#   • may reorder buf[1:n] (quickselect is partial, values are preserved)
-#   • must NOT overwrite buf[1:n] with unrelated data — compaction reads it next
-#   • may freely read and write aux[1:n]
-#
-# Three specialisations, resolved at compile time:
-#
-#   (fast_median!, mad_std!) — fully specialised; median shared between centre
-#                              and MAD; two quickselects, one deviation loop
-#   (fast_median!, generic)  — fast centre, user-supplied dispersion
-#   (generic,     generic)   — both reducers are plain callables (fallback)
-
-
-# Specialisation 1 — (FastMedian, MADStd)
-#
-# After fast_median!(buf[1:n]) the buffer is reordered but all n values remain.
-# We compute |buf[i] − m| into aux[1:n] (leaving buf intact), then run a second
-# quickselect on aux to get the MAD.
-#
-@inline function _compute_stats(::typeof(fast_median!), ::typeof(mad_std!),
-    n::Int,
-    ws)
-    buf = workspace_buffer(ws)
-    aux = workspace_auxbuffer(ws)
-    T = eltype(buf)
-    bv = @inbounds view(buf, 1:n)
-    m = fast_median!(bv)                   # quickselect on buf — buf reordered
-
-    @inbounds for i in 1:n                  # write deviations to aux, buf intact
-        aux[i] = abs(buf[i] - m)
-    end
-    av = @inbounds view(aux, 1:n)
-    mad = fast_median!(av)                  # quickselect on aux
-
-    return m, mad * _scale_factor(T, 1.4826022185056018)
-end
-
-# Specialisation 2 — (FastMedian, generic spread)
-#
-# Most spread functions are permutation-invariant, so calling them after
-# fast_median! has reordered buf is safe.
-#
-@inline function _compute_stats(::typeof(fast_median!), spread_f,
-    n::Int,
-    ws)
-    buf = workspace_buffer(ws)
-    bv = @inbounds view(buf, 1:n)
-    m = fast_median!(bv)
-    s = spread_f(bv)
-    return m, s
-end
-
-# Specialisation 3 — generic fallback
-#
-# Both reducers are plain callables.  No buffer reuse assumptions are made.
-#
-@inline function _compute_stats(center_f, spread_f,
-    n::Int,
-    ws)
-    buf = workspace_buffer(ws)
-    bv = @inbounds view(buf, 1:n)
-    return center_f(bv), spread_f(bv)
-end
-
-
 # ─── Core bounds algorithm ────────────────────────────────────────────────────
 
 function _sigma_clip_bounds_impl(
@@ -304,6 +157,8 @@ function _sigma_clip_bounds_impl(
     W = eltype(workspace_buffer(ws))
     sigma_lower = _scale_factor(W, sigma_lower)
     sigma_upper = _scale_factor(W, sigma_upper)
+    _validate_sigma("sigma_lower", sigma_lower)
+    _validate_sigma("sigma_upper", sigma_upper)
     buf = workspace_buffer(ws)
 
     # Pack valid (finite, not excluded) elements into the workspace buffer
@@ -359,6 +214,7 @@ end
     spread::S,
     maxiter::Int,
 ) where {T,C,S}
+    !isnothing(exclude) && _validate_axes("exclude", exclude, x)
     ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
     _sigma_clip_bounds_impl(x, exclude, ws,
         sigma_lower, sigma_upper,
@@ -379,13 +235,18 @@ where `true` marks a finite, non-clipped value.  `x` is never modified.
                          accepts [`SigmaClipWorkspace`](@ref) or any custom type
                          implementing [`SigmaClip.workspace_buffer`](@ref) and
                          [`SigmaClip.workspace_auxbuffer`](@ref).
-- `sigma_lower=3`      — lower rejection threshold (multiples of dispersion).
-- `sigma_upper=3`      — upper rejection threshold.
+- `sigma_lower=3`      — finite, non-negative lower rejection threshold.
+- `sigma_upper=3`      — finite, non-negative upper rejection threshold.
 - `maxiter=5`          — maximum iterations; `-1` means run until convergence.
-- `center=fast_median!` — centre estimator; any `f(v::AbstractVector) -> scalar`.
-- `spread=mad_std!`     — dispersion estimator; any `f(v::AbstractVector) -> scalar`.
-- `exclude=nothing`    — boolean array selecting points excluded from bound computation;
-                         unlike the returned mask, here `true` means "exclude".
+- `center=fast_median!` — centre estimator; any `f(v::AbstractVector) -> scalar`,
+                          or a workspace-aware reducer implementing
+                          `SigmaClip.statistic(f, ws, n)`.
+- `spread=mad_std!`     — dispersion estimator; any `f(v::AbstractVector) -> scalar`,
+                          or a workspace-aware reducer implementing
+                          `SigmaClip.statistic(f, ws, n)`.
+- `exclude=nothing`    — boolean array with the same axes as `x`; `true` excludes
+                         a value from bound estimation only. Excluded values are
+                         still classified against the final bounds.
 
 # Example
 ```julia
@@ -410,8 +271,8 @@ end
 """
     sigma_clip_mask!(x, target; kwargs...) -> target
 
-In-place mask variant: writes pixel-validity flags into the pre-allocated `BitArray`
-`target` (same shape as `x`).  Same keyword arguments as [`sigma_clip_mask`](@ref).
+In-place mask variant: writes pixel-validity flags into the pre-allocated boolean
+`target` with the same axes as `x`. Same keyword arguments as [`sigma_clip_mask`](@ref).
 """
 function sigma_clip_mask!(x::AbstractArray{T},
     target::AbstractArray{Bool};
@@ -423,6 +284,7 @@ function sigma_clip_mask!(x::AbstractArray{T},
     spread::S=mad_std!,
     maxiter::Int=5) where {T,C,S}
 
+    _validate_axes("target", target, x)
     lb, ub = _sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
     @inbounds for i in eachindex(x)
@@ -436,12 +298,16 @@ end
     sigma_clip!(x; kwargs...) -> x
 
 In-place sigma clipping: replaces outliers in `x` with `NaN`.
-Requires an array that can represent `NaN`.
+Requires an array whose element type can represent `NaN`. Use [`sigma_clip`](@ref)
+for integer arrays, or convert integer input to floating point before calling
+`sigma_clip!`.
 
 Same keyword arguments as [`sigma_clip_mask`](@ref).
 
 # Example
 ```julia
+using Statistics
+
 data = randn(500); data[end] = 1e6
 sigma_clip!(data)                    # fast_median! + mad_std! (default)
 sigma_clip!(data; spread=std)        # median + standard deviation
@@ -470,7 +336,8 @@ function sigma_clip!(x::AbstractArray{T};
 end
 
 sigma_clip!(x::AbstractArray{<:Integer}; kw...) =
-    throw(MethodError(sigma_clip!, (x,)))
+    throw(ArgumentError(
+        "sigma_clip! requires an array whose element type can represent NaN; use sigma_clip(x) for integer arrays or convert the input to floating point"))
 
 """
     sigma_clip(x; kwargs...) -> Array{<:Number}

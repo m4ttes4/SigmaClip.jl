@@ -53,6 +53,52 @@ end
 SigmaClip.workspace_buffer(ws::ReinterpretedWorkspace) = ws.buf
 SigmaClip.workspace_auxbuffer(ws::ReinterpretedWorkspace) = ws.aux
 
+struct ZeroBasedVector{T} <: AbstractVector{T}
+    data::Vector{T}
+end
+
+Base.size(v::ZeroBasedVector) = size(v.data)
+Base.axes(v::ZeroBasedVector) = (0:length(v.data)-1,)
+Base.IndexStyle(::Type{<:ZeroBasedVector}) = IndexLinear()
+Base.getindex(v::ZeroBasedVector, i::Int) = v.data[i+1]
+Base.setindex!(v::ZeroBasedVector, x, i::Int) = (v.data[i+1] = x)
+
+struct WorkspaceConstantCenter end
+struct WorkspaceConstantSpread end
+struct WorkspaceMeanAbsDeviation end
+
+function SigmaClip.statistic(
+    ::WorkspaceConstantCenter,
+    ws::ExternalWorkspace,
+    n::Int,
+)
+    ws.scratch1[1]
+end
+
+function SigmaClip.statistic(
+    ::WorkspaceConstantSpread,
+    ws::ExternalWorkspace,
+    n::Int,
+)
+    ws.scratch3[1]
+end
+
+function SigmaClip.statistic(
+    ::WorkspaceMeanAbsDeviation,
+    ws::ExternalWorkspace,
+    n::Int,
+)
+    data = @view SigmaClip.workspace_buffer(ws)[1:n]
+    aux = @view SigmaClip.workspace_auxbuffer(ws)[1:n]
+    center = sum(data) / length(data)
+
+    @inbounds for i in eachindex(data)
+        aux[i] = abs(data[i] - center)
+    end
+
+    return sum(aux) / length(aux)
+end
+
 struct TestQuantity{T<:AbstractFloat} <: Number
     value::T
 end
@@ -234,6 +280,7 @@ value(a::TestQuantity) = a.value
                 SigmaClip._ensure_workspace(Float64, length(x), ws)
                 SigmaClip._compute_stats(fast_median!, mad_std!, length(x), ws)
                 SigmaClip._compute_stats(fast_median!, std, length(x), ws)
+                SigmaClip._compute_stats(mean, mad_std!, length(x), ws)
                 SigmaClip._compute_stats(mean, std, length(x), ws)
                 SigmaClip._sigma_clip_bounds_impl(x, nothing, ws,
                     3.0, 3.0, fast_median!, mad_std!, 5)
@@ -252,6 +299,7 @@ value(a::TestQuantity) = a.value
                 ensure = @allocated SigmaClip._ensure_workspace(Float64, length(x), ws)
                 stats_mad = @allocated SigmaClip._compute_stats(fast_median!, mad_std!, length(x), ws)
                 stats_std = @allocated SigmaClip._compute_stats(fast_median!, std, length(x), ws)
+                stats_mean_mad = @allocated SigmaClip._compute_stats(mean, mad_std!, length(x), ws)
                 stats_generic = @allocated SigmaClip._compute_stats(mean, std, length(x), ws)
                 bounds_impl = @allocated SigmaClip._sigma_clip_bounds_impl(x, nothing, ws,
                     3.0, 3.0, fast_median!, mad_std!, 5)
@@ -264,7 +312,7 @@ value(a::TestQuantity) = a.value
                 bounds_checked_int = @allocated SigmaClip._sigma_clip_bounds_checked(x_int, ws_int, nothing,
                     3.0, 3.0, fast_median!, mad_std!, 5)
 
-                (; ensure, stats_mad, stats_std, stats_generic,
+                (; ensure, stats_mad, stats_std, stats_mean_mad, stats_generic,
                    bounds_impl, bounds_impl_exclude,
                    bounds_checked, bounds_checked_exclude, bounds_checked_int)
             end
@@ -318,10 +366,14 @@ value(a::TestQuantity) = a.value
             missing = MissingWorkspaceProtocol()
             wrong_type = WrongTypeWorkspace(zeros(Float32, 20), zeros(Float32, 20))
             short_aux = ShortAuxWorkspace(zeros(Float64, 20), zeros(Float64, 10))
+            zero_based = ReinterpretedWorkspace(
+                ZeroBasedVector(zeros(Float64, 20)),
+                ZeroBasedVector(zeros(Float64, 20)))
 
             @test_throws ArgumentError sigma_clip!(data; workspace=missing)
             @test_throws ArgumentError sigma_clip!(data; workspace=wrong_type)
             @test_throws ArgumentError sigma_clip!(data; workspace=short_aux)
+            @test_throws ArgumentError sigma_clip!(data; workspace=zero_based)
         end
 
         @testset "reinterpreted quantity workspace is accepted" begin
@@ -337,6 +389,64 @@ value(a::TestQuantity) = a.value
             @test lb isa TestQuantity{Float64}
             @test ub isa TestQuantity{Float64}
             @test value(ub) < 100.0
+        end
+
+        @testset "default statistic uses compacted workspace view" begin
+            ws = SigmaClipWorkspace(Float64, 5)
+            ws.buf .= 1.0:5.0
+            ws.aux .= 11.0:15.0
+
+            @test SigmaClip.statistic(mean, ws, 3) == 2.0
+
+            function touch_first!(v)
+                v[1] = 99.0
+                return sum(v)
+            end
+
+            @test SigmaClip.statistic(touch_first!, ws, 3) == 104.0
+            @test ws.buf[1] == 99.0
+            @test ws.buf[4:5] == [4.0, 5.0]
+            @test ws.aux == collect(11.0:15.0)
+        end
+
+        @testset "workspace-aware statistic protocol is supported" begin
+            ws = ExternalWorkspace(zeros(Float64, 6), zeros(Float64, 6),
+                zeros(Float64, 6), zeros(Float64, 6))
+            ws.scratch2 .= [1.0, 2.0, 3.0, 100.0, 200.0, 300.0]
+
+            @test SigmaClip.statistic(mean, ws, 3) == 2.0
+            @test SigmaClip.statistic(WorkspaceMeanAbsDeviation(), ws, 3) ≈ 2 / 3
+            @test ws.scratch4[1:3] == [1.0, 0.0, 1.0]
+            @test ws.scratch4[4:6] == [0.0, 0.0, 0.0]
+        end
+
+        @testset "workspace-aware statistics work through public entrypoints" begin
+            data = vcat(zeros(Float64, 8), [100.0, -100.0])
+            ws = ExternalWorkspace(fill(0.0, 10), zeros(Float64, 10),
+                fill(1.0, 10), zeros(Float64, 10))
+
+            clipped = sigma_clip(data;
+                workspace=ws,
+                center=WorkspaceConstantCenter(),
+                spread=WorkspaceConstantSpread(),
+                sigma_lower=50.0,
+                sigma_upper=50.0)
+
+            @test count(isnan, clipped) == 2
+            @test isnan(clipped[9]) && isnan(clipped[10])
+            @test all(==(0.0), clipped[1:8])
+        end
+
+        @testset "workspace-aware statistics are allocation-free" begin
+            function allocs_workspace_statistic()
+                ws = ExternalWorkspace(zeros(Float64, 1000), randn(1000),
+                    zeros(Float64, 1000), zeros(Float64, 1000))
+
+                SigmaClip.statistic(WorkspaceMeanAbsDeviation(), ws, 1000)
+                @allocated SigmaClip.statistic(WorkspaceMeanAbsDeviation(), ws, 1000)
+            end
+
+            @test allocs_workspace_statistic() == 0
         end
 
     end # SigmaClipWorkspace
@@ -404,6 +514,22 @@ value(a::TestQuantity) = a.value
             lb_u, ub_u = SigmaClip.sigma_clip_bounds(data;
                 center=fast_median!, spread=mad_std!)
             @test ub_m <= ub_u
+        end
+
+        @testset "invalid sigma values raise ArgumentError" begin
+            data = randn(20)
+
+            @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_lower=-1)
+            @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_upper=-1)
+            @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_lower=NaN)
+            @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_upper=Inf)
+        end
+
+        @testset "exclude axes must match input axes" begin
+            data = randn(4)
+
+            @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; exclude=falses(2, 2))
+            @test_throws ArgumentError sigma_clip!(copy(data); exclude=falses(3))
         end
 
         @testset "asymmetric sigma" begin
@@ -540,8 +666,16 @@ value(a::TestQuantity) = a.value
             @test isnan(data[52])      # low outlier clipped
         end
 
-        @testset "integer input raises MethodError" begin
-            @test_throws MethodError sigma_clip!([1, 2, 3, 100])
+        @testset "integer input raises helpful ArgumentError" begin
+            err = try
+                sigma_clip!([1, 2, 3, 100])
+                nothing
+            catch err
+                err
+            end
+
+            @test err isa ArgumentError
+            @test occursin("use sigma_clip(x)", sprint(showerror, err))
         end
 
         @testset "Float32 input preserved as Float32" begin
@@ -658,6 +792,35 @@ value(a::TestQuantity) = a.value
             @test result === target
         end
 
+        @testset "sigma_clip_mask! target axes must match input axes" begin
+            data = randn(4)
+
+            @test_throws ArgumentError sigma_clip_mask!(data, falses(2, 2))
+            @test_throws ArgumentError sigma_clip_mask!(data, falses(3))
+        end
+
+        @testset "exclude is stats-only, not a forced bad mask" begin
+            data = zeros(5)
+            exclude = falses(5)
+            exclude[3] = true
+
+            mask = sigma_clip_mask(data; exclude=exclude)
+
+            @test mask[3] == true
+            @test all(mask)
+        end
+
+        @testset "excluded values are still classified against final bounds" begin
+            data = [0.0, 0.0, 0.0, 0.0, 50.0]
+            exclude = falses(5)
+            exclude[end] = true
+
+            mask = sigma_clip_mask(data; exclude=exclude)
+
+            @test mask[end] == false
+            @test count(mask) == 4
+        end
+
         @testset "quantity-like reinterpreted input mask" begin
             raw = vcat(zeros(8), [100.0])
             data = reinterpret(TestQuantity{Float64}, raw)
@@ -736,6 +899,23 @@ value(a::TestQuantity) = a.value
                 SigmaClip.fast_median!, SigmaClip.mad_std!,
                 length(v), ws)
             @test s ≈ ref_mad_std(v)
+        end
+
+        @testset "mad_std! statistic uses workspace auxiliary buffer" begin
+            function mad_stat_result_and_allocs()
+                v = collect(1.0:1000.0)
+                ws = SigmaClipWorkspace(Float64, length(v))
+                ws.buf .= v
+
+                result = SigmaClip.statistic(mad_std!, ws, length(v))
+                allocs = @allocated SigmaClip.statistic(mad_std!, ws, length(v))
+
+                (; result, allocs)
+            end
+
+            checked = mad_stat_result_and_allocs()
+            @test checked.result ≈ ref_mad_std(collect(1.0:1000.0))
+            @test checked.allocs == 0
         end
 
     end # reducer dispatch
