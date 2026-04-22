@@ -3,6 +3,7 @@
 function _kth_smallest!(a::AbstractVector{T}, k::Int) where T
     l = firstindex(a)
     r = lastindex(a)
+    # Partition in place until the k-th element lands in its final position.
     @inbounds while l < r
         pivot = a[k]
         i, j = l, r
@@ -43,6 +44,7 @@ function fast_median!(a::AbstractVector{T}) where T
     n = length(a)
     n == 0 && return zero(T)
     o = firstindex(a) - 1
+    # Use quickselect directly so the median stays allocation-free.
     iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
     _kth_smallest!(a, o + (n + 1) ÷ 2)
 end
@@ -75,6 +77,7 @@ function mad_std!(a::AbstractVector{T}) where {T<:Number}
 
     m = fast_median!(a)
     aux = similar(a)
+    # Compute absolute deviations first, then select their median.
     @inbounds for i in eachindex(a)
         aux[i] = abs(a[i] - m)
     end
@@ -118,6 +121,7 @@ The auxiliary buffer may be used freely as scratch.
 """
 @inline function statistic(f, ws, n::Int)
     data = @inbounds view(workspace_buffer(ws), 1:n)
+    # Default path: hand the compacted prefix to any vector-based reducer.
     return f(data)
 end
 
@@ -127,6 +131,7 @@ end
     T = eltype(aux)
 
     m = fast_median!(data)
+    # Reuse the auxiliary buffer so MAD stays allocation-free too.
     @inbounds for i in eachindex(data)
         aux[i] = abs(data[i] - m)
     end
@@ -164,6 +169,7 @@ end
     data = @inbounds view(workspace_buffer(ws), 1:n)
     aux = @inbounds view(workspace_auxbuffer(ws), 1:n)
     T = eltype(aux)
+    # Fast path: share the median result and only allocate work inside ws.
     m = fast_median!(data)                 # quickselect on data — data reordered
 
     @inbounds for i in eachindex(data)      # write deviations to aux, data intact

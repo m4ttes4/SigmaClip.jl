@@ -7,4 +7,4 @@ project_hash = "b5819ebf1fa2887d4949e1cebdca6524bd5a2f59"
 [[deps.SigmaClip]]
 path = "."
 uuid = "e8e6a0c9-ed5e-482f-a5cb-ec074f5ee4bb"
-version = "0.1.1"
+version = "0.3.1"

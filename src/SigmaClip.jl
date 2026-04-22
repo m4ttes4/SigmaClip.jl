@@ -10,8 +10,6 @@ const BAD_PIXEL = false
 const GOOD_PIXEL = true
 
 
-# ─── Statistics reducers ─────────────────────────────────────────────────────
-
 include("stats.jl")
 
 
@@ -102,7 +100,7 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline _nan_value(::Type{T}) where {T<:Number} = convert(T, NaN * oneunit(T))
 
 @inline _same_axes(a, b) = axes(a) == axes(b)
-# @inline _is_one_indexed(v) = firstindex(v) == 1
+# @inline _is_one_indexed(v) = firstindex(v) == 1 not sure if needed
 @inline _is_nonnegative_finite(x) = isfinite(x) && x >= zero(x)
 @inline _validate_axes(name, a, x) = _same_axes(a, x) || throw(ArgumentError("$name axes mismatch: expected $(axes(x)), got $(axes(a))"))
 @inline _validate_sigma(name, value) = _is_nonnegative_finite(value) || throw(ArgumentError("$name must be finite and non-negative, got $value"))
@@ -112,6 +110,7 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 end
 
 @inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T<:Number}
+    # Reused hot-path buffers must match the expected element type and length.
     buf isa AbstractVector || throw(ArgumentError(
         "workspace $role must be an AbstractVector, got $(typeof(buf))"))
     eltype(buf) === T || throw(ArgumentError(
@@ -155,13 +154,14 @@ function _sigma_clip_bounds_impl(
 
     have_exclude = !isnothing(exclude)
     W = eltype(workspace_buffer(ws))
+    # Promote thresholds once so the whole iteration stays in workspace type.
     sigma_lower = _scale_factor(W, sigma_lower)
     sigma_upper = _scale_factor(W, sigma_upper)
     _validate_sigma("sigma_lower", sigma_lower)
     _validate_sigma("sigma_upper", sigma_upper)
     buf = workspace_buffer(ws)
 
-    # Pack valid (finite, not excluded) elements into the workspace buffer
+    # Pack valid (finite, not excluded) elements into a dense workspace buffer.
     n = 0
     @inbounds for i in eachindex(x)
         if (!have_exclude || !exclude[i]) && isfinite(x[i])
@@ -177,6 +177,7 @@ function _sigma_clip_bounds_impl(
     upper_bound = zero(W)
     iter = 0
 
+    # Repeat until the bounds stop changing or the iteration cap is reached.
     while true
         c, s = _compute_stats(center, spread, current, ws)
         c = convert(W, c)
@@ -185,7 +186,7 @@ function _sigma_clip_bounds_impl(
         lower_bound = c - s * sigma_lower
         upper_bound = c + s * sigma_upper
 
-        # In-place compaction — write index <= read index always holds
+        # Repack survivors in place so the next statistic sees a dense prefix.
         new_count = 0
         @inbounds for i in 1:current
             val = buf[i]
@@ -214,6 +215,7 @@ end
     spread::S,
     maxiter::Int,
 ) where {T,C,S}
+    # Validate shapes first, then pick or build the workspace for this input.
     !isnothing(exclude) && _validate_axes("exclude", exclude, x)
     ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
     _sigma_clip_bounds_impl(x, exclude, ws,
@@ -287,6 +289,7 @@ function sigma_clip_mask!(x::AbstractArray{T},
     _validate_axes("target", target, x)
     lb, ub = _sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
+    # Final mask is just a bounds check against the converged interval.
     @inbounds for i in eachindex(x)
         val = x[i]
         target[i] = isfinite(val) && val >= lb && val <= ub
@@ -326,6 +329,7 @@ function sigma_clip!(x::AbstractArray{T};
     lb, ub = _sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
     nan = _nan_value(T)
+    # Outliers and non-finite values are rewritten to NaN in place.
     @inbounds for i in eachindex(x)
         val = x[i]
         if !isfinite(val) || val < lb || val > ub
@@ -335,6 +339,7 @@ function sigma_clip!(x::AbstractArray{T};
     return x
 end
 
+# Integer arrays cannot hold NaN, so fail fast instead of silently converting.
 sigma_clip!(x::AbstractArray{<:Integer}; kw...) =
     throw(ArgumentError(
         "sigma_clip! requires an array whose element type can represent NaN; use sigma_clip(x) for integer arrays or convert the input to floating point"))
@@ -348,6 +353,7 @@ element type when it can represent `NaN`.
 Same keyword arguments as [`sigma_clip!`](@ref).
 """
 sigma_clip(x::AbstractArray{<:Number}; kw...) = sigma_clip!(copy(x); kw...)
+# Promote integer inputs so the returned array can represent NaN outliers.
 sigma_clip(x::AbstractArray{<:Integer}; kw...) = sigma_clip!(float.(x); kw...)
 
 """
