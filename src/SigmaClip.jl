@@ -47,7 +47,7 @@ implementing [`SigmaClip.workspace_buffer`](@ref) and
 ```julia
 ws = SigmaClipWorkspace(Float64, size(image, 2))
 for row in eachrow(image)
-    sigma_clip!(row; workspace=ws)
+    sigma_clip!(row; workspace = ws)
 end
 ```
 """
@@ -116,17 +116,7 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
     return SigmaClipWorkspace(T, n)
 end
 
-<<<<<<< Updated upstream
-@inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T<:Number}
-    buf isa AbstractVector || throw(ArgumentError(
-        "workspace $role must be an AbstractVector, got $(typeof(buf))"))
-    eltype(buf) === T || throw(ArgumentError(
-        "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"))
-    length(buf) >= n || throw(ArgumentError(
-        "workspace $role too short: length $(length(buf)) < required $n"))
-=======
 @inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T <: Number}
-    # Reused hot-path buffers must match the expected element type and length.
     buf isa AbstractVector || throw(
         ArgumentError(
             "workspace $role must be an AbstractVector, got $(typeof(buf))"
@@ -142,7 +132,6 @@ end
             "workspace $role too short: length $(length(buf)) < required $n"
         )
     )
->>>>>>> Stashed changes
     # _is_one_indexed(buf) || throw(ArgumentError(
     #     "workspace $role must be 1-indexed, got firstindex $(firstindex(buf))"))
     # if n > 0
@@ -231,17 +220,6 @@ function _sigma_clip_bounds_impl(
 end
 
 @inline function _sigma_clip_bounds_checked(
-<<<<<<< Updated upstream
-    x::AbstractArray{T},
-    workspace,
-    exclude::Union{Nothing,AbstractArray{Bool}},
-    sigma_lower,
-    sigma_upper,
-    center::C,
-    spread::S,
-    maxiter::Int,
-) where {T,C,S}
-=======
         x::AbstractArray{T},
         workspace,
         exclude::Union{Nothing, AbstractArray{Bool}},
@@ -251,8 +229,6 @@ end
         spread::S,
         maxiter::Int,
     ) where {T, C, S}
-    # Validate shapes first, then pick or build the workspace for this input.
->>>>>>> Stashed changes
     !isnothing(exclude) && _validate_axes("exclude", exclude, x)
     ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
     return _sigma_clip_bounds_impl(
@@ -293,7 +269,7 @@ where `true` marks a finite, non-clipped value.  `x` is never modified.
 ```julia
 data = randn(1000); data[1] = 99.0
 clean = data[sigma_clip_mask(data)]                        # default
-clean = data[sigma_clip_mask(data; spread=mad_std!)]      # robust MAD
+clean = data[sigma_clip_mask(data; spread = mad_std!)]      # robust MAD
 ```
 """
 function sigma_clip_mask(
@@ -333,13 +309,8 @@ function sigma_clip_mask!(
 
     _validate_axes("target", target, x)
     lb, ub = _sigma_clip_bounds_checked(
-<<<<<<< Updated upstream
-        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
-=======
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
     )
-    # Final mask is just a bounds check against the converged interval.
->>>>>>> Stashed changes
     @inbounds for i in eachindex(x)
         val = x[i]
         target[i] = isfinite(val) && val >= lb && val <= ub
@@ -361,10 +332,10 @@ Same keyword arguments as [`sigma_clip_mask`](@ref).
 ```julia
 using Statistics
 
-data = randn(500); data[end] = 1e6
+data = randn(500); data[end] = 1.0e6
 sigma_clip!(data)                    # fast_median! + mad_std! (default)
-sigma_clip!(data; spread=std)        # median + standard deviation
-sigma_clip!(data; center=mean, spread=std)  # fully custom
+sigma_clip!(data; spread = std)        # median + standard deviation
+sigma_clip!(data; center = mean, spread = std)  # fully custom
 ```
 """
 function sigma_clip!(
@@ -416,7 +387,7 @@ Return the final convergence bounds without modifying `x` or producing a mask.
 Accepts the same keyword arguments as [`sigma_clip_mask`](@ref).
 
 ```julia
-lb, ub = SigmaClip.sigma_clip_bounds(data; sigma_lower=2.5, spread=mad_std!)
+lb, ub = SigmaClip.sigma_clip_bounds(data; sigma_lower = 2.5, spread = mad_std!)
 println("outliers: x < \$lb  or  x > \$ub")
 ```
 """

@@ -43,14 +43,8 @@ function fast_median!(a::AbstractVector{T}) where {T}
     n = length(a)
     n == 0 && return zero(T)
     o = firstindex(a) - 1
-<<<<<<< Updated upstream
-    iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
-    _kth_smallest!(a, o + (n + 1) ÷ 2)
-=======
-    # Use quickselect directly so the median stays allocation-free.
     return iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
         _kth_smallest!(a, o + (n + 1) ÷ 2)
->>>>>>> Stashed changes
 end
 
 function fast_median!(a::AbstractVector{<:Integer})
