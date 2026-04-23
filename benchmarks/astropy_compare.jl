@@ -17,15 +17,17 @@ try
     @eval import PythonCall
 catch err
     if err isa ArgumentError || err isa LoadError
-        println(stderr, """
-        PythonCall is required for this manual benchmark.
+        println(
+            stderr, """
+            PythonCall is required for this manual benchmark.
 
-        Run the script from a Julia environment that already has PythonCall,
-        numpy, astropy, and this local package available.
+            Run the script from a Julia environment that already has PythonCall,
+            numpy, astropy, and this local package available.
 
-        This benchmark is not part of SigmaClip's test suite and PythonCall is
-        not a runtime dependency of the package.
-        """)
+            This benchmark is not part of SigmaClip's test suite and PythonCall is
+            not a runtime dependency of the package.
+            """
+        )
         exit(2)
     end
     rethrow()
@@ -36,26 +38,28 @@ function import_python_deps()
         np = PythonCall.pyimport("numpy")
         astropy_stats = PythonCall.pyimport("astropy.stats")
         warnings = PythonCall.pyimport("warnings")
-        warnings.filterwarnings("ignore"; message="Input data contains invalid values.*")
+        warnings.filterwarnings("ignore"; message = "Input data contains invalid values.*")
         return np, astropy_stats
     catch err
-        println(stderr, """
-        Python dependencies are required for this manual benchmark.
+        println(
+            stderr, """
+            Python dependencies are required for this manual benchmark.
 
-        Ensure PythonCall can import both numpy and astropy, for example:
+            Ensure PythonCall can import both numpy and astropy, for example:
 
-            python3 -m pip install numpy astropy
+                python3 -m pip install numpy astropy
 
-        Original error:
-        $err
-        """)
+            Original error:
+            $err
+            """
+        )
         exit(2)
     end
 end
 
 const NP, ASTROPY_STATS = import_python_deps()
 
-population_std(v) = std(v; corrected=false)
+population_std(v) = std(v; corrected = false)
 
 struct CompareCase
     name::String
@@ -112,25 +116,31 @@ function reps_for_size(n::Int)
     return 10
 end
 
-function julia_mask!(target::AbstractVector{Bool}, data::Vector{Float64},
-    ws::SigmaClipWorkspace{Float64}, case::CompareCase)
+function julia_mask!(
+        target::AbstractVector{Bool}, data::Vector{Float64},
+        ws::SigmaClipWorkspace{Float64}, case::CompareCase
+    )
 
-    if case.spread == :mad_std
-        sigma_clip_mask!(data, target;
-            workspace=ws,
-            center=fast_median!,
-            spread=mad_std!,
-            sigma_lower=case.sigma_lower,
-            sigma_upper=case.sigma_upper,
-            maxiter=case.maxiter)
+    return if case.spread == :mad_std
+        sigma_clip_mask!(
+            data, target;
+            workspace = ws,
+            center = fast_median!,
+            spread = mad_std!,
+            sigma_lower = case.sigma_lower,
+            sigma_upper = case.sigma_upper,
+            maxiter = case.maxiter
+        )
     elseif case.spread == :std
-            sigma_clip_mask!(data, target;
-            workspace=ws,
-            center=fast_median!,
-            spread=population_std,
-            sigma_lower=case.sigma_lower,
-            sigma_upper=case.sigma_upper,
-            maxiter=case.maxiter)
+        sigma_clip_mask!(
+            data, target;
+            workspace = ws,
+            center = fast_median!,
+            spread = population_std,
+            sigma_lower = case.sigma_lower,
+            sigma_upper = case.sigma_upper,
+            maxiter = case.maxiter
+        )
     else
         error("unsupported spread: $(case.spread)")
     end
@@ -138,16 +148,18 @@ end
 
 function astropy_mask(py_data, case::CompareCase)
     stdfunc = case.spread == :mad_std ? "mad_std" : "std"
-    result = ASTROPY_STATS.sigma_clip(py_data;
-        sigma_lower=case.sigma_lower,
-        sigma_upper=case.sigma_upper,
-        maxiters=case.maxiter == -1 ? nothing : case.maxiter,
-        cenfunc="median",
-        stdfunc=stdfunc,
-        masked=true,
-        copy=true)
+    result = ASTROPY_STATS.sigma_clip(
+        py_data;
+        sigma_lower = case.sigma_lower,
+        sigma_upper = case.sigma_upper,
+        maxiters = case.maxiter == -1 ? nothing : case.maxiter,
+        cenfunc = "median",
+        stdfunc = stdfunc,
+        masked = true,
+        copy = true
+    )
 
-    mask = NP.asarray(result.mask, dtype=NP.bool_)
+    mask = NP.asarray(result.mask, dtype = NP.bool_)
     return PythonCall.pyconvert(Vector{Bool}, mask)
 end
 
@@ -156,12 +168,12 @@ function elapsed_seconds(f, reps::Int)
     for _ in 1:reps
         f()
     end
-    (time_ns() - t0) / 1e9 / reps
+    return (time_ns() - t0) / 1.0e9 / reps
 end
 
 function compare_case(case::CompareCase, n::Int)
     data = make_data(case, n)
-    py_data = NP.array(data, dtype=NP.float64, copy=true)
+    py_data = NP.array(data, dtype = NP.float64, copy = true)
 
     target = falses(n)
     ws = SigmaClipWorkspace(Float64, n)
@@ -175,33 +187,43 @@ function compare_case(case::CompareCase, n::Int)
         julia_mask!(target, data, ws, case)
     end
     astropy_time = elapsed_seconds(reps) do
-        ASTROPY_STATS.sigma_clip(py_data;
-            sigma_lower=case.sigma_lower,
-            sigma_upper=case.sigma_upper,
-            maxiters=case.maxiter == -1 ? nothing : case.maxiter,
-            cenfunc="median",
-            stdfunc=case.spread == :mad_std ? "mad_std" : "std",
-            masked=true,
-            copy=true)
+        ASTROPY_STATS.sigma_clip(
+            py_data;
+            sigma_lower = case.sigma_lower,
+            sigma_upper = case.sigma_upper,
+            maxiters = case.maxiter == -1 ? nothing : case.maxiter,
+            cenfunc = "median",
+            stdfunc = case.spread == :mad_std ? "mad_std" : "std",
+            masked = true,
+            copy = true
+        )
     end
 
-    return (; case=case.name, n, reps, julia_time, astropy_time,
-        speedup=astropy_time / julia_time, mismatches)
+    return (;
+        case = case.name, n, reps, julia_time, astropy_time,
+        speedup = astropy_time / julia_time, mismatches,
+    )
 end
 
 function print_header()
-    @printf("%-24s %9s %6s %12s %12s %9s %10s\n",
-        "case", "n", "reps", "SigmaClip", "Astropy", "speedup", "diffs")
-    @printf("%-24s %9s %6s %12s %12s %9s %10s\n",
+    @printf(
+        "%-24s %9s %6s %12s %12s %9s %10s\n",
+        "case", "n", "reps", "SigmaClip", "Astropy", "speedup", "diffs"
+    )
+    return @printf(
+        "%-24s %9s %6s %12s %12s %9s %10s\n",
         repeat("-", 24), repeat("-", 9), repeat("-", 6), repeat("-", 12),
-        repeat("-", 12), repeat("-", 9), repeat("-", 10))
+        repeat("-", 12), repeat("-", 9), repeat("-", 10)
+    )
 end
 
 function print_row(row)
-    @printf("%-24s %9d %6d %9.3f ms %9.3f ms %8.2fx %10d\n",
+    return @printf(
+        "%-24s %9d %6d %9.3f ms %9.3f ms %8.2fx %10d\n",
         row.case, row.n, row.reps,
-        1e3 * row.julia_time, 1e3 * row.astropy_time,
-        row.speedup, row.mismatches)
+        1.0e3 * row.julia_time, 1.0e3 * row.astropy_time,
+        row.speedup, row.mismatches
+    )
 end
 
 function main()
@@ -235,7 +257,7 @@ function main()
     end
 
     println()
-    println("All SigmaClip masks matched Astropy.")
+    return println("All SigmaClip masks matched Astropy.")
 end
 
 main()

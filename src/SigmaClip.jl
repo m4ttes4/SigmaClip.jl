@@ -1,7 +1,6 @@
 module SigmaClip
 
 
-
 export sigma_clip_mask, sigma_clip_mask!, sigma_clip!, sigma_clip
 export SigmaClipWorkspace
 export fast_median!, mad_std!
@@ -52,7 +51,7 @@ for row in eachrow(image)
 end
 ```
 """
-struct SigmaClipWorkspace{T<:Number}
+struct SigmaClipWorkspace{T <: Number}
     buf::Vector{T}
     aux::Vector{T}
 end
@@ -65,8 +64,11 @@ Custom workspace types can participate in the allocation-free API by returning
 a writable, 1-indexed `AbstractVector` and implementing
 [`SigmaClip.workspace_auxbuffer`](@ref).
 """
-workspace_buffer(ws) = throw(ArgumentError(
-    "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"))
+workspace_buffer(ws) = throw(
+    ArgumentError(
+        "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"
+    )
+)
 
 """
     SigmaClip.workspace_auxbuffer(ws) -> AbstractVector
@@ -76,8 +78,11 @@ Return the auxiliary mutable scratch buffer used by SigmaClip's specialised
 participate in the allocation-free API by returning a writable, 1-indexed
 `AbstractVector` and implementing [`SigmaClip.workspace_buffer`](@ref).
 """
-workspace_auxbuffer(ws) = throw(ArgumentError(
-    "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"))
+workspace_auxbuffer(ws) = throw(
+    ArgumentError(
+        "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"
+    )
+)
 
 workspace_buffer(ws::SigmaClipWorkspace) = ws.buf
 workspace_auxbuffer(ws::SigmaClipWorkspace) = ws.aux
@@ -85,21 +90,21 @@ workspace_auxbuffer(ws::SigmaClipWorkspace) = ws.aux
 SigmaClipWorkspace(T::Type{<:Number}, n::Int) =
     SigmaClipWorkspace{T}(Vector{T}(undef, n), Vector{T}(undef, n))
 
-SigmaClipWorkspace(x::AbstractArray{T}) where {T<:Number} =
+SigmaClipWorkspace(x::AbstractArray{T}) where {T <: Number} =
     SigmaClipWorkspace(T, length(x))
 
 SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
     SigmaClipWorkspace(Float64, length(x))
 
-@inline _workspace_eltype(::Type{T}) where {T<:AbstractFloat} = T
+@inline _workspace_eltype(::Type{T}) where {T <: AbstractFloat} = T
 @inline _workspace_eltype(::Type{<:Integer}) = Float64
-@inline _workspace_eltype(::Type{T}) where {T<:Number} = T
+@inline _workspace_eltype(::Type{T}) where {T <: Number} = T
 
-@inline _scale_factor(::Type{T}, x) where {T<:AbstractFloat} = convert(T, x)
+@inline _scale_factor(::Type{T}, x) where {T <: AbstractFloat} = convert(T, x)
 @inline _scale_factor(::Type{<:Number}, x) = float(x)
 
-@inline _nan_value(::Type{T}) where {T<:AbstractFloat} = T(NaN)
-@inline _nan_value(::Type{T}) where {T<:Number} = convert(T, NaN * oneunit(T))
+@inline _nan_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
+@inline _nan_value(::Type{T}) where {T <: Number} = convert(T, NaN * oneunit(T))
 
 @inline _same_axes(a, b) = axes(a) == axes(b)
 # @inline _is_one_indexed(v) = firstindex(v) == 1
@@ -107,10 +112,11 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline _validate_axes(name, a, x) = _same_axes(a, x) || throw(ArgumentError("$name axes mismatch: expected $(axes(x)), got $(axes(a))"))
 @inline _validate_sigma(name, value) = _is_nonnegative_finite(value) || throw(ArgumentError("$name must be finite and non-negative, got $value"))
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T<:Number}
-    SigmaClipWorkspace(T, n)
+@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T <: Number}
+    return SigmaClipWorkspace(T, n)
 end
 
+<<<<<<< Updated upstream
 @inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T<:Number}
     buf isa AbstractVector || throw(ArgumentError(
         "workspace $role must be an AbstractVector, got $(typeof(buf))"))
@@ -118,6 +124,25 @@ end
         "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"))
     length(buf) >= n || throw(ArgumentError(
         "workspace $role too short: length $(length(buf)) < required $n"))
+=======
+@inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T <: Number}
+    # Reused hot-path buffers must match the expected element type and length.
+    buf isa AbstractVector || throw(
+        ArgumentError(
+            "workspace $role must be an AbstractVector, got $(typeof(buf))"
+        )
+    )
+    eltype(buf) === T || throw(
+        ArgumentError(
+            "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"
+        )
+    )
+    length(buf) >= n || throw(
+        ArgumentError(
+            "workspace $role too short: length $(length(buf)) < required $n"
+        )
+    )
+>>>>>>> Stashed changes
     # _is_one_indexed(buf) || throw(ArgumentError(
     #     "workspace $role must be 1-indexed, got firstindex $(firstindex(buf))"))
     # if n > 0
@@ -128,30 +153,30 @@ end
     #             "workspace $role must support setindex!, got $(typeof(buf)): $err"))
     #     end
     # end
-    nothing
+    return nothing
 end
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T<:Number}
+@inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T <: Number}
     buf = workspace_buffer(ws)
     aux = workspace_auxbuffer(ws)
     _validate_workspace_buffer(buf, T, n, "buffer")
     _validate_workspace_buffer(aux, T, n, "aux buffer")
-    ws
+    return ws
 end
 
 
 # ─── Core bounds algorithm ────────────────────────────────────────────────────
 
 function _sigma_clip_bounds_impl(
-    x::AbstractArray{T},
-    exclude::M,
-    ws,
-    sigma_lower,
-    sigma_upper,
-    center::C,
-    spread::S,
-    maxiter::Int,
-) where {T,M,C,S}
+        x::AbstractArray{T},
+        exclude::M,
+        ws,
+        sigma_lower,
+        sigma_upper,
+        center::C,
+        spread::S,
+        maxiter::Int,
+    ) where {T, M, C, S}
 
     have_exclude = !isnothing(exclude)
     W = eltype(workspace_buffer(ws))
@@ -202,9 +227,11 @@ function _sigma_clip_bounds_impl(
         (maxiter != -1 && iter >= maxiter) && return (lower_bound, upper_bound)
         current < 2 && return (lower_bound, upper_bound)
     end
+    return
 end
 
 @inline function _sigma_clip_bounds_checked(
+<<<<<<< Updated upstream
     x::AbstractArray{T},
     workspace,
     exclude::Union{Nothing,AbstractArray{Bool}},
@@ -214,11 +241,25 @@ end
     spread::S,
     maxiter::Int,
 ) where {T,C,S}
+=======
+        x::AbstractArray{T},
+        workspace,
+        exclude::Union{Nothing, AbstractArray{Bool}},
+        sigma_lower,
+        sigma_upper,
+        center::C,
+        spread::S,
+        maxiter::Int,
+    ) where {T, C, S}
+    # Validate shapes first, then pick or build the workspace for this input.
+>>>>>>> Stashed changes
     !isnothing(exclude) && _validate_axes("exclude", exclude, x)
     ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
-    _sigma_clip_bounds_impl(x, exclude, ws,
+    return _sigma_clip_bounds_impl(
+        x, exclude, ws,
         sigma_lower, sigma_upper,
-        center, spread, maxiter)
+        center, spread, maxiter
+    )
 end
 
 
@@ -255,17 +296,21 @@ clean = data[sigma_clip_mask(data)]                        # default
 clean = data[sigma_clip_mask(data; spread=mad_std!)]      # robust MAD
 ```
 """
-function sigma_clip_mask(x::AbstractArray{T};
-    workspace=nothing,
-    exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
-    sigma_lower=3,
-    sigma_upper=3,
-    center::C=fast_median!,
-    spread::S=mad_std!,
-    maxiter::Int=5) where {T,C,S}
+function sigma_clip_mask(
+        x::AbstractArray{T};
+        workspace = nothing,
+        exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
+        sigma_lower = 3,
+        sigma_upper = 3,
+        center::C = fast_median!,
+        spread::S = mad_std!,
+        maxiter::Int = 5
+    ) where {T, C, S}
     target = falses(size(x))
-    sigma_clip_mask!(x, target;
-        workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
+    return sigma_clip_mask!(
+        x, target;
+        workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+    )
 end
 
 """
@@ -274,19 +319,27 @@ end
 In-place mask variant: writes pixel-validity flags into the pre-allocated boolean
 `target` with the same axes as `x`. Same keyword arguments as [`sigma_clip_mask`](@ref).
 """
-function sigma_clip_mask!(x::AbstractArray{T},
-    target::AbstractArray{Bool};
-    workspace=nothing,
-    exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
-    sigma_lower=3,
-    sigma_upper=3,
-    center::C=fast_median!,
-    spread::S=mad_std!,
-    maxiter::Int=5) where {T,C,S}
+function sigma_clip_mask!(
+        x::AbstractArray{T},
+        target::AbstractArray{Bool};
+        workspace = nothing,
+        exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
+        sigma_lower = 3,
+        sigma_upper = 3,
+        center::C = fast_median!,
+        spread::S = mad_std!,
+        maxiter::Int = 5
+    ) where {T, C, S}
 
     _validate_axes("target", target, x)
     lb, ub = _sigma_clip_bounds_checked(
+<<<<<<< Updated upstream
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
+=======
+        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+    )
+    # Final mask is just a bounds check against the converged interval.
+>>>>>>> Stashed changes
     @inbounds for i in eachindex(x)
         val = x[i]
         target[i] = isfinite(val) && val >= lb && val <= ub
@@ -314,17 +367,20 @@ sigma_clip!(data; spread=std)        # median + standard deviation
 sigma_clip!(data; center=mean, spread=std)  # fully custom
 ```
 """
-function sigma_clip!(x::AbstractArray{T};
-    workspace=nothing,
-    exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
-    sigma_lower=3,
-    sigma_upper=3,
-    center::C=fast_median!,
-    spread::S=mad_std!,
-    maxiter::Int=5) where {T<:Number,C,S}
+function sigma_clip!(
+        x::AbstractArray{T};
+        workspace = nothing,
+        exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
+        sigma_lower = 3,
+        sigma_upper = 3,
+        center::C = fast_median!,
+        spread::S = mad_std!,
+        maxiter::Int = 5
+    ) where {T <: Number, C, S}
 
     lb, ub = _sigma_clip_bounds_checked(
-        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
+        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+    )
     nan = _nan_value(T)
     @inbounds for i in eachindex(x)
         val = x[i]
@@ -336,8 +392,11 @@ function sigma_clip!(x::AbstractArray{T};
 end
 
 sigma_clip!(x::AbstractArray{<:Integer}; kw...) =
-    throw(ArgumentError(
-        "sigma_clip! requires an array whose element type can represent NaN; use sigma_clip(x) for integer arrays or convert the input to floating point"))
+    throw(
+    ArgumentError(
+        "sigma_clip! requires an array whose element type can represent NaN; use sigma_clip(x) for integer arrays or convert the input to floating point"
+    )
+)
 
 """
     sigma_clip(x; kwargs...) -> Array{<:Number}
@@ -361,17 +420,20 @@ lb, ub = SigmaClip.sigma_clip_bounds(data; sigma_lower=2.5, spread=mad_std!)
 println("outliers: x < \$lb  or  x > \$ub")
 ```
 """
-function sigma_clip_bounds(x::AbstractArray{T};
-    workspace=nothing,
-    exclude::Union{Nothing,AbstractArray{Bool}}=nothing,
-    sigma_lower=3,
-    sigma_upper=3,
-    center::C=fast_median!,
-    spread::S=mad_std!,
-    maxiter::Int=5) where {T,C,S}
+function sigma_clip_bounds(
+        x::AbstractArray{T};
+        workspace = nothing,
+        exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
+        sigma_lower = 3,
+        sigma_upper = 3,
+        center::C = fast_median!,
+        spread::S = mad_std!,
+        maxiter::Int = 5
+    ) where {T, C, S}
 
-    _sigma_clip_bounds_checked(
-        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter)
+    return _sigma_clip_bounds_checked(
+        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+    )
 end
 
 end # module SigmaClip

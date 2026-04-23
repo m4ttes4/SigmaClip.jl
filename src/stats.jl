@@ -1,6 +1,6 @@
 # ─── Quickselect median ───────────────────────────────────────────────────────
 
-function _kth_smallest!(a::AbstractVector{T}, k::Int) where T
+function _kth_smallest!(a::AbstractVector{T}, k::Int) where {T}
     l = firstindex(a)
     r = lastindex(a)
     @inbounds while l < r
@@ -39,20 +39,26 @@ Allocation-free; roughly 2–3× faster than `Statistics.median` on random data.
 
 See also: [`mad_std!`](@ref)
 """
-function fast_median!(a::AbstractVector{T}) where T
+function fast_median!(a::AbstractVector{T}) where {T}
     n = length(a)
     n == 0 && return zero(T)
     o = firstindex(a) - 1
+<<<<<<< Updated upstream
     iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
     _kth_smallest!(a, o + (n + 1) ÷ 2)
+=======
+    # Use quickselect directly so the median stays allocation-free.
+    return iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
+        _kth_smallest!(a, o + (n + 1) ÷ 2)
+>>>>>>> Stashed changes
 end
 
 function fast_median!(a::AbstractVector{<:Integer})
     n = length(a)
     n == 0 && return 0.0
     o = firstindex(a) - 1
-    iseven(n) ? 0.5 * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
-    _kth_smallest!(a, o + (n + 1) ÷ 2)
+    return iseven(n) ? 0.5 * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
+        _kth_smallest!(a, o + (n + 1) ÷ 2)
 end
 
 """
@@ -69,7 +75,7 @@ auxiliary buffer instead of allocating its own.
 
 See also: [`fast_median!`](@ref)
 """
-function mad_std!(a::AbstractVector{T}) where {T<:Number}
+function mad_std!(a::AbstractVector{T}) where {T <: Number}
     n = length(a)
     n == 0 && return zero(T)
 
@@ -78,7 +84,7 @@ function mad_std!(a::AbstractVector{T}) where {T<:Number}
     @inbounds for i in eachindex(a)
         aux[i] = abs(a[i] - m)
     end
-    fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
+    return fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
 end
 
 function mad_std!(a::AbstractVector{<:Integer})
@@ -90,7 +96,7 @@ function mad_std!(a::AbstractVector{<:Integer})
     @inbounds for i in eachindex(a)
         aux[i] = abs(a[i] - m)
     end
-    fast_median!(aux) * 1.4826022185056018
+    return fast_median!(aux) * 1.4826022185056018
 end
 
 """
@@ -131,7 +137,7 @@ end
         aux[i] = abs(data[i] - m)
     end
 
-    fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
+    return fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
 end
 
 
@@ -158,9 +164,11 @@ end
 # We compute |buf[i] − m| into aux[1:n] (leaving buf intact), then run a second
 # quickselect on aux to get the MAD.
 #
-@inline function _compute_stats(::typeof(fast_median!), ::typeof(mad_std!),
-    n::Int,
-    ws)
+@inline function _compute_stats(
+        ::typeof(fast_median!), ::typeof(mad_std!),
+        n::Int,
+        ws
+    )
     data = @inbounds view(workspace_buffer(ws), 1:n)
     aux = @inbounds view(workspace_auxbuffer(ws), 1:n)
     T = eltype(aux)
@@ -179,9 +187,11 @@ end
 # Most spread functions are permutation-invariant, so calling them after
 # fast_median! has reordered buf is safe.
 #
-@inline function _compute_stats(::typeof(fast_median!), spread_f,
-    n::Int,
-    ws)
+@inline function _compute_stats(
+        ::typeof(fast_median!), spread_f,
+        n::Int,
+        ws
+    )
     data = @inbounds view(workspace_buffer(ws), 1:n)
     m = fast_median!(data)
     s = statistic(spread_f, ws, n)
@@ -192,9 +202,11 @@ end
 #
 # Both reducers are plain callables.  No buffer reuse assumptions are made.
 #
-@inline function _compute_stats(center_f, spread_f,
-    n::Int,
-    ws)
+@inline function _compute_stats(
+        center_f, spread_f,
+        n::Int,
+        ws
+    )
     c = statistic(center_f, ws, n)
     s = statistic(spread_f, ws, n)
     return c, s
