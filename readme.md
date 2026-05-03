@@ -166,7 +166,7 @@ println("outliers: x < $lb  or  x > $ub")
 | :--- | :--- | :--- |
 | `sigma_lower` | `3` | Finite, non-negative rejection threshold below the centre. |
 | `sigma_upper` | `3` | Finite, non-negative rejection threshold above the centre. |
-| `maxiter` | `5` | Maximum number of clipping iterations. Pass `-1` to run until convergence. |
+| `maxiter` | `5` | Maximum number of clipping iterations. Must be `-1` or a positive integer; pass `-1` to run until convergence. |
 | `center` | `fast_median!` | Centre estimator. Any callable `f(v::AbstractVector) -> scalar`, or a workspace-aware reducer via `SigmaClip.statistic(f, ws, n)`. |
 | `spread` | `mad_std!` | Dispersion estimator. Any callable `f(v::AbstractVector) -> scalar`, or a workspace-aware reducer via `SigmaClip.statistic(f, ws, n)`. |
 | `exclude` | `nothing` | Boolean array with the same axes as `x`; `true` excludes a value from bound estimation only. |

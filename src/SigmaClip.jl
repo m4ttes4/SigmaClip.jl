@@ -111,6 +111,7 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline _is_nonnegative_finite(x) = isfinite(x) && x >= zero(x)
 @inline _validate_axes(name, a, x) = _same_axes(a, x) || throw(ArgumentError("$name axes mismatch: expected $(axes(x)), got $(axes(a))"))
 @inline _validate_sigma(name, value) = _is_nonnegative_finite(value) || throw(ArgumentError("$name must be finite and non-negative, got $value"))
+@inline _validate_maxiter(maxiter::Int) = (maxiter == -1 || maxiter >= 1) || throw(ArgumentError("maxiter must be -1 or a positive integer"))
 
 @inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T <: Number}
     return SigmaClipWorkspace(T, n)
@@ -153,6 +154,30 @@ end
     return ws
 end
 
+@inline function _pack_valid!(buf::AbstractVector, x::AbstractArray, ::Nothing)
+    n = 0
+    @inbounds for i in eachindex(x)
+        val = x[i]
+        if isfinite(val)
+            n += 1
+            buf[n] = val
+        end
+    end
+    return n
+end
+
+@inline function _pack_valid!(buf::AbstractVector, x::AbstractArray, exclude::AbstractArray{Bool})
+    n = 0
+    @inbounds for i in eachindex(x, exclude)
+        val = x[i]
+        if !exclude[i] && isfinite(val)
+            n += 1
+            buf[n] = val
+        end
+    end
+    return n
+end
+
 
 # ─── Core bounds algorithm ────────────────────────────────────────────────────
 
@@ -167,7 +192,6 @@ function _sigma_clip_bounds_impl(
         maxiter::Int,
     ) where {T, M, C, S}
 
-    have_exclude = !isnothing(exclude)
     W = eltype(workspace_buffer(ws))
     sigma_lower = _scale_factor(W, sigma_lower)
     sigma_upper = _scale_factor(W, sigma_upper)
@@ -175,15 +199,7 @@ function _sigma_clip_bounds_impl(
     _validate_sigma("sigma_upper", sigma_upper)
     buf = workspace_buffer(ws)
 
-    # Pack valid (finite, not excluded) elements into the workspace buffer
-    n = 0
-    @inbounds for i in eachindex(x)
-        if (!have_exclude || !exclude[i]) && isfinite(x[i])
-            n += 1
-            buf[n] = x[i]
-        end
-    end
-
+    n = _pack_valid!(buf, x, exclude)
     n == 0 && return (zero(W), zero(W))
 
     current = n
@@ -231,6 +247,7 @@ end
     ) where {T, C, S}
     !isnothing(exclude) && _validate_axes("exclude", exclude, x)
     ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
+    _validate_maxiter(maxiter)
     return _sigma_clip_bounds_impl(
         x, exclude, ws,
         sigma_lower, sigma_upper,
