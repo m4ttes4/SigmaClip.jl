@@ -170,7 +170,7 @@ println("outliers: x < $lb  or  x > $ub")
 | `center` | `fast_median!` | Centre estimator. Any callable `f(v::AbstractVector) -> scalar`, or a workspace-aware reducer via `SigmaClip.statistic(f, ws, n)`. |
 | `spread` | `mad_std!` | Dispersion estimator. Any callable `f(v::AbstractVector) -> scalar`, or a workspace-aware reducer via `SigmaClip.statistic(f, ws, n)`. |
 | `exclude` | `nothing` | Boolean array with the same axes as `x`; `true` excludes a value from bound estimation only. |
-| `workspace` | `nothing` | Pre-allocated workspace for allocation-free operation; accepts [`SigmaClipWorkspace`](#zero-allocation-hot-loops) or a custom type implementing `SigmaClip.workspace_buffer` and `SigmaClip.workspace_auxbuffer`. |
+| `workspace` | `nothing` | Pre-allocated workspace for allocation-free operation; accepts [`SigmaClipWorkspace`](#zero-allocation-hot-loops) or a custom type implementing `SigmaClip.workspace_buffer` and `SigmaClip.workspace_auxbuffer`. The auxiliary buffer may be `nothing` when the selected statistics do not use it. |
 
 ---
 
@@ -220,7 +220,7 @@ When applying sigma clipping to thousands of arrays (e.g. every row of a 2-D
 image), the internal buffer allocations can become a bottleneck. Allocate a
 `SigmaClipWorkspace` once and pass it via the `workspace` keyword to make every
 subsequent call allocation-free. External packages may also pass a custom
-workspace type, as long as it exposes the two buffers SigmaClip needs.
+workspace type, as long as it exposes the main buffer SigmaClip needs.
 
 ```julia
 # Allocate once — must be at least as long as each array being processed
@@ -231,7 +231,7 @@ for row in eachrow(image)
 end
 ```
 
-The workspace holds two internal buffers:
+The built-in workspace holds two internal buffers:
 
 - `buf` — working copy of the valid elements, compacted in-place each iteration.
 - `aux` — auxiliary buffer used by `mad_std!` and available to workspace-aware
@@ -258,13 +258,21 @@ Custom workspace types participate in the same API by implementing two methods:
 
 ```julia
 SigmaClip.workspace_buffer(ws)    # main packed-data buffer
-SigmaClip.workspace_auxbuffer(ws) # auxiliary MAD buffer
+SigmaClip.workspace_auxbuffer(ws) # auxiliary buffer, or nothing
 ```
 
-Both accessors must return writable, 1-indexed `AbstractVector`s with the exact
-numeric type SigmaClip requires for the input being processed (`Float32` for
-`Float32` input, the quantity type for unitful input, `Float64` for integer
-input, etc.) and length at least `length(x)`.
+`workspace_buffer(ws)` is required. It must return a writable, 1-indexed
+`AbstractVector` with the exact numeric type SigmaClip requires for the input
+being processed (`Float32` for `Float32` input, the quantity type for unitful
+input, `Float64` for integer input, etc.) and length at least `length(x)`.
+
+`workspace_auxbuffer(ws)` is optional. It may return another writable
+`AbstractVector` with the same type and capacity, or it may return `nothing`
+when the selected statistics do not need auxiliary scratch space. If a custom
+statistic calls `SigmaClip.workspace_auxbuffer(ws)`, it is the statistic
+author's responsibility to ensure that the workspace actually provides an aux
+buffer before indexing it. Built-in `mad_std!` requires aux and will throw an
+`ArgumentError` when aux is `nothing`.
 
 ```julia
 struct ExternalWorkspace{T}
@@ -278,6 +286,20 @@ SigmaClip.workspace_auxbuffer(ws::ExternalWorkspace) = ws.tmp3
 
 ws = ExternalWorkspace(zeros(Float64, 1024), zeros(Float64, 1024), zeros(Float64, 1024))
 sigma_clip!(data; workspace=ws)
+```
+
+For statistics that only need the packed data buffer, aux can be omitted:
+
+```julia
+struct NoAuxWorkspace{T}
+    buf::Vector{T}
+end
+
+SigmaClip.workspace_buffer(ws::NoAuxWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::NoAuxWorkspace) = nothing
+
+ws = NoAuxWorkspace(zeros(Float64, length(data)))
+sigma_clip!(data; workspace=ws, spread=x -> 1.0)
 ```
 
 ---

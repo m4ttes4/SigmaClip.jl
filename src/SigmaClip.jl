@@ -61,8 +61,7 @@ end
 
 Return the main mutable scratch buffer used by SigmaClip for packed valid data.
 Custom workspace types can participate in the allocation-free API by returning
-a writable, 1-indexed `AbstractVector` and implementing
-[`SigmaClip.workspace_auxbuffer`](@ref).
+a writable, 1-indexed `AbstractVector`.
 """
 workspace_buffer(ws) = throw(
     ArgumentError(
@@ -74,9 +73,8 @@ workspace_buffer(ws) = throw(
     SigmaClip.workspace_auxbuffer(ws) -> AbstractVector
 
 Return the auxiliary mutable scratch buffer used by SigmaClip's specialised
-`mad_std!` path and workspace-aware statistics. Custom workspace types can
-participate in the allocation-free API by returning a writable, 1-indexed
-`AbstractVector` and implementing [`SigmaClip.workspace_buffer`](@ref).
+`mad_std!` path and workspace-aware statistics. Custom workspace types may
+return `nothing` when they do not provide auxiliary scratch space.
 """
 workspace_auxbuffer(ws) = throw(
     ArgumentError(
@@ -113,9 +111,6 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline _validate_sigma(name, value) = _is_nonnegative_finite(value) || throw(ArgumentError("$name must be finite and non-negative, got $value"))
 @inline _validate_maxiter(maxiter::Int) = (maxiter == -1 || maxiter >= 1) || throw(ArgumentError("maxiter must be -1 or a positive integer"))
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T <: Number}
-    return SigmaClipWorkspace(T, n)
-end
 
 @inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T <: Number}
     buf isa AbstractVector || throw(
@@ -133,24 +128,44 @@ end
             "workspace $role too short: length $(length(buf)) < required $n"
         )
     )
-    # _is_one_indexed(buf) || throw(ArgumentError(
-    #     "workspace $role must be 1-indexed, got firstindex $(firstindex(buf))"))
-    # if n > 0
-    #     try
-    #         buf[firstindex(buf)] = zero(T)
-    #     catch err
-    #         throw(ArgumentError(
-    #             "workspace $role must support setindex!, got $(typeof(buf)): $err"))
-    #     end
-    # end
     return nothing
+end
+
+@inline function _validate_workspace_auxbuffer(::Nothing, ::Type{T}, n::Int) where {T <: Number}
+    return nothing
+end
+
+@inline function _validate_workspace_auxbuffer(aux, ::Type{T}, n::Int) where {T <: Number}
+    return _validate_workspace_buffer(aux, T, n, "aux buffer")
+end
+
+@inline _requires_aux(_) = false
+@inline _requires_aux(::typeof(mad_std!)) = true
+
+@inline function _validate_required_aux(ws, center, spread)
+    if workspace_auxbuffer(ws) === nothing && (_requires_aux(center) || _requires_aux(spread))
+        throw(ArgumentError("workspace aux buffer is required by the selected statistic but workspace_auxbuffer returned nothing"))
+    end
+    return nothing
+end
+
+@inline function _require_workspace_auxbuffer(ws)
+    aux = workspace_auxbuffer(ws)
+    aux === nothing && throw(
+        ArgumentError("workspace aux buffer is required by this statistic but workspace_auxbuffer returned nothing")
+    )
+    return aux
+end
+
+@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T <: Number}
+    return SigmaClipWorkspace(T, n)
 end
 
 @inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T <: Number}
     buf = workspace_buffer(ws)
     aux = workspace_auxbuffer(ws)
     _validate_workspace_buffer(buf, T, n, "buffer")
-    _validate_workspace_buffer(aux, T, n, "aux buffer")
+    _validate_workspace_auxbuffer(aux, T, n)
     return ws
 end
 
@@ -184,13 +199,13 @@ end
 function _sigma_clip_bounds_impl(
         x::AbstractArray{T},
         exclude::M,
-        ws,
+        ws::WS,
         sigma_lower,
         sigma_upper,
         center::C,
         spread::S,
         maxiter::Int,
-    ) where {T, M, C, S}
+    ) where {T, M, C, S, WS}
 
     W = eltype(workspace_buffer(ws))
     sigma_lower = _scale_factor(W, sigma_lower)
@@ -247,6 +262,7 @@ end
     ) where {T, C, S}
     !isnothing(exclude) && _validate_axes("exclude", exclude, x)
     ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
+    _validate_required_aux(ws, center, spread)
     _validate_maxiter(maxiter)
     return _sigma_clip_bounds_impl(
         x, exclude, ws,
