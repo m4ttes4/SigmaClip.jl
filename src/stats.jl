@@ -116,12 +116,14 @@ Statistics may reorder `workspace_buffer(ws)[1:n]`, but must preserve those
 values because SigmaClip compacts that buffer after computing the statistics.
 The auxiliary buffer may be used freely as scratch.
 """
-@inline function statistic(f, ws, n::Int)
+@inline function statistic(f::F, ws::WS, n::Int) where {F, WS}
     data = @inbounds view(workspace_buffer(ws), 1:n)
     return f(data)
 end
 
-@inline function statistic(::typeof(mad_std!), ws, n::Int)
+
+#TODO JETS suggest possible type inference problem with eltype(aux)
+@inline function statistic(::typeof(mad_std!), ws::WS, n::Int) where {WS}
     data = @inbounds view(workspace_buffer(ws), 1:n)
     aux = @inbounds view(workspace_auxbuffer(ws), 1:n)
     T = eltype(aux)
@@ -161,8 +163,9 @@ end
 @inline function _compute_stats(
         ::typeof(fast_median!), ::typeof(mad_std!),
         n::Int,
-        ws
-    )
+        ws::WS
+    ) where {WS}
+
     data = @inbounds view(workspace_buffer(ws), 1:n)
     aux = @inbounds view(workspace_auxbuffer(ws), 1:n)
     T = eltype(aux)
@@ -172,8 +175,8 @@ end
         aux[i] = abs(data[i] - m)
     end
     mad = fast_median!(aux)                 # quickselect on aux
-
-    return m, mad * _scale_factor(T, 1.4826022185056018)
+    r = _scale_factor(T, 1.4826022185056018)
+    return m, mad * r # _scale_factor(T, 1.4826022185056018)
 end
 
 # Specialisation 2 — (FastMedian, generic spread)
@@ -184,8 +187,9 @@ end
 @inline function _compute_stats(
         ::typeof(fast_median!), spread_f,
         n::Int,
-        ws
-    )
+        ws::WS
+    ) where {WS}
+    
     data = @inbounds view(workspace_buffer(ws), 1:n)
     m = fast_median!(data)
     s = statistic(spread_f, ws, n)
@@ -197,10 +201,12 @@ end
 # Both reducers are plain callables.  No buffer reuse assumptions are made.
 #
 @inline function _compute_stats(
-        center_f, spread_f,
+        center_f::C,
+        spread_f::S,
         n::Int,
-        ws
-    )
+        ws::WS
+    ) where {C, S, WS}
+
     c = statistic(center_f, ws, n)
     s = statistic(spread_f, ws, n)
     return c, s

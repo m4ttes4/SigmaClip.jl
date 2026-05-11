@@ -203,8 +203,8 @@ function _sigma_clip_bounds_impl(
     n == 0 && return (zero(W), zero(W))
 
     current = n
-    lower_bound = zero(W)
-    upper_bound = zero(W)
+    # lower_bound = zero(W)
+    # upper_bound = zero(W)
     iter = 0
 
     while true
@@ -379,7 +379,7 @@ function sigma_clip!(
     return x
 end
 
-sigma_clip!(x::AbstractArray{<:Integer}; kw...) =
+sigma_clip!(::AbstractArray{<:Integer}; _kw...) =
     throw(
     ArgumentError(
         "sigma_clip! requires an array whose element type can represent NaN; use sigma_clip(x) for integer arrays or convert the input to floating point"
