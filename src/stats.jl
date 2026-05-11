@@ -125,7 +125,7 @@ end
 #TODO JETS suggest possible type inference problem with eltype(aux)
 @inline function statistic(::typeof(mad_std!), ws::WS, n::Int) where {WS}
     data = @inbounds view(workspace_buffer(ws), 1:n)
-    aux = @inbounds view(workspace_auxbuffer(ws), 1:n)
+    aux = @inbounds view(_require_workspace_auxbuffer(ws), 1:n)
     T = eltype(aux)
 
     m = fast_median!(data)
@@ -167,7 +167,7 @@ end
     ) where {WS}
 
     data = @inbounds view(workspace_buffer(ws), 1:n)
-    aux = @inbounds view(workspace_auxbuffer(ws), 1:n)
+    aux = @inbounds view(_require_workspace_auxbuffer(ws), 1:n)
     T = eltype(aux)
     m = fast_median!(data)                 # quickselect on data — data reordered
 
