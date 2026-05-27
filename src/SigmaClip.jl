@@ -218,8 +218,6 @@ function _sigma_clip_bounds_impl(
     n == 0 && return (zero(W), zero(W))
 
     current = n
-    # lower_bound = zero(W)
-    # upper_bound = zero(W)
     iter = 0
 
     while true
