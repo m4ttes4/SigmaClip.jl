@@ -1,3 +1,5 @@
+
+const MAD_SF = 1.4826022185056018
 # ─── Quickselect median ───────────────────────────────────────────────────────
 
 function _kth_smallest!(a::AbstractVector{T}, k::Int) where {T}
@@ -26,8 +28,9 @@ function _kth_smallest!(a::AbstractVector{T}, k::Int) where {T}
     return a[k]
 end
 
+# TODO for type stability, fast median should return float(T)
 """
-    fast_median!(a::AbstractVector) -> eltype(a)
+    fast_median!(a::AbstractVector) -> float(eltype(a))
 
 Compute the median of `a` in O(n) average time using an in-place quickselect
 (Wirth's algorithm).  **Modifies the ordering of `a`** but preserves all values.
@@ -43,20 +46,28 @@ function fast_median!(a::AbstractVector{T}) where {T}
     n = length(a)
     n == 0 && return zero(T)
     o = firstindex(a) - 1
-    return iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
-        _kth_smallest!(a, o + (n + 1) ÷ 2)
+    OUT = float(T)
+
+    if iseven(n)
+        res = (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2
+    else 
+        res = _kth_smallest!(a, o + (n + 1) ÷ 2)
+    end
+        return convert(OUT, res)
+    # return iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
+    #     _kth_smallest!(a, o + (n + 1) ÷ 2)
 end
 
-function fast_median!(a::AbstractVector{<:Integer})
-    n = length(a)
-    n == 0 && return 0.0
-    o = firstindex(a) - 1
-    return iseven(n) ? 0.5 * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
-        _kth_smallest!(a, o + (n + 1) ÷ 2)
-end
+# function fast_median!(a::AbstractVector{<:Integer})
+#     n = length(a)
+#     n == 0 && return 0.0
+#     o = firstindex(a) - 1
+#     return iseven(n) ? 0.5 * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
+#         _kth_smallest!(a, o + (n + 1) ÷ 2)
+# end
 
 """
-    mad_std!(a::AbstractVector)
+    mad_std!(a::AbstractVector) -> float(eltype(T))
 
 Compute the Median Absolute Deviation of `a` in-place, scaled by 1.4826 to
 match the standard deviation of a normal distribution.
@@ -69,29 +80,30 @@ auxiliary buffer instead of allocating its own.
 
 See also: [`fast_median!`](@ref)
 """
-function mad_std!(a::AbstractVector{T}) where {T <: Number}
+mad_std!(a::AbstractVector{T}) where {T} = mad_std!(a, similar(a))
+
+function mad_std!(a::AbstractVector{T}, aux::AbstractVector{T}) where {T <: Number}
     n = length(a)
     n == 0 && return zero(T)
 
     m = fast_median!(a)
-    aux = similar(a)
     @inbounds for i in eachindex(a)
         aux[i] = abs(a[i] - m)
     end
-    return fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
+    return convert(float(T), fast_median!(aux) * MAD_SF)#_scale_factor(T, 1.4826022185056018)
 end
 
-function mad_std!(a::AbstractVector{<:Integer})
-    n = length(a)
-    n == 0 && return 0.0
+# function mad_std!(a::AbstractVector{<:Integer})
+#     n = length(a)
+#     n == 0 && return 0.0
 
-    m = fast_median!(a)
-    aux = Vector{Float64}(undef, n)
-    @inbounds for i in eachindex(a)
-        aux[i] = abs(a[i] - m)
-    end
-    return fast_median!(aux) * 1.4826022185056018
-end
+#     m = fast_median!(a)
+#     aux = Vector{Float64}(undef, n)
+#     @inbounds for i in eachindex(a)
+#         aux[i] = abs(a[i] - m)
+#     end
+#     return fast_median!(aux) * 1.4826022185056018
+# end
 
 """
     SigmaClip.statistic(f, ws, n::Int)
@@ -126,14 +138,14 @@ end
 @inline function statistic(::typeof(mad_std!), ws::WS, n::Int) where {WS}
     data = @inbounds view(workspace_buffer(ws), 1:n)
     aux = @inbounds view(_require_workspace_auxbuffer(ws), 1:n)
-    T = eltype(aux)
+
 
     m = fast_median!(data)
     @inbounds for i in eachindex(data)
         aux[i] = abs(data[i] - m)
     end
 
-    return fast_median!(aux) * _scale_factor(T, 1.4826022185056018)
+    return fast_median!(aux) * MAD_SF#  _scale_factor(T, 1.4826022185056018)
 end
 
 
@@ -161,22 +173,23 @@ end
 # quickselect on aux to get the MAD.
 #
 @inline function _compute_stats(
-        ::typeof(fast_median!), ::typeof(mad_std!),
+        ::typeof(fast_median!), 
+        ::typeof(mad_std!),
         n::Int,
         ws::WS
     ) where {WS}
 
     data = @inbounds view(workspace_buffer(ws), 1:n)
     aux = @inbounds view(_require_workspace_auxbuffer(ws), 1:n)
-    T = eltype(aux)
+
     m = fast_median!(data)                 # quickselect on data — data reordered
 
     @inbounds for i in eachindex(data)      # write deviations to aux, data intact
         aux[i] = abs(data[i] - m)
     end
     mad = fast_median!(aux)                 # quickselect on aux
-    r = _scale_factor(T, 1.4826022185056018)
-    return m, mad * r # _scale_factor(T, 1.4826022185056018)
+    #r = _scale_factor(T, 1.4826022185056018)
+    return m, mad * MAD_SF # _scale_factor(T, 1.4826022185056018)
 end
 
 # Specialisation 2 — (FastMedian, generic spread)

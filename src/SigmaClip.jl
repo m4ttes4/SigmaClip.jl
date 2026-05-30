@@ -98,8 +98,8 @@ SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
 @inline _workspace_eltype(::Type{<:Integer}) = Float64
 @inline _workspace_eltype(::Type{T}) where {T <: Number} = T
 
-@inline _scale_factor(::Type{T}, x) where {T <: AbstractFloat} = convert(T, x)
-@inline _scale_factor(::Type{<:Number}, x) = float(x)
+# @inline _scale_factor(::Type{T}, x) where {T <: AbstractFloat} = convert(T, x)
+# @inline _scale_factor(::Type{<:Number}, x) = float(x)
 
 @inline _nan_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
 @inline _nan_value(::Type{T}) where {T <: Number} = convert(T, NaN * oneunit(T))

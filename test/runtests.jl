@@ -899,6 +899,15 @@ end # sigma_clip
         @test mask[end] == false
     end
 
+    @testset "-Inf input element is marked false" begin
+        data = vcat(ones(Float64, 20), [-Inf])
+        mask = sigma_clip_mask(
+            data;
+            center = fast_median!, spread = mad_std!
+        )
+        @test mask[end] == false
+    end
+
     @testset "result size matches input" begin
         data = randn(77)
         @test size(sigma_clip_mask(data)) == size(data)
