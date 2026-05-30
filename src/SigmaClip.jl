@@ -1,175 +1,43 @@
 module SigmaClip
 
+# ─── Statistics reducers ─────────────────────────────────────────────────────
+
+include("workspace.jl")
+include("stats.jl")
 
 export sigma_clip_mask, sigma_clip_mask!, sigma_clip!, sigma_clip
-export SigmaClipWorkspace
+export WorkSpace
 export fast_median!, mad_std!
 
 const BAD_PIXEL = false
 const GOOD_PIXEL = true
 
 
-# ─── Statistics reducers ─────────────────────────────────────────────────────
-
-include("stats.jl")
-
-
-# ─── Reducer specialisations ──────────────────────────────────────────────────
-#
-# Reducer functions are singleton objects, so _compute_stats can still
-# specialise on `typeof(fast_median!)` / `typeof(mad_std!)` at compile time.
-# Users pass the public function directly (e.g. `center=fast_median!`) to opt
-# into the fast path; arbitrary callables fall through to the generic fallback.
-
-# ─── Workspace ────────────────────────────────────────────────────────────────
-
-"""
-    SigmaClipWorkspace{T <: Number}
-
-Pre-allocated scratch space for sigma clipping.  Pass one instance via the
-`workspace` keyword to eliminate all dynamic allocations in hot loops.
-`SigmaClipWorkspace` is the built-in implementation of SigmaClip's public
-workspace protocol; external packages may pass their own workspace types by
-implementing [`SigmaClip.workspace_buffer`](@ref) and
-[`SigmaClip.workspace_auxbuffer`](@ref).
-
-# Fields
-- `buf` — working copy of the valid elements; compacted in-place each iteration.
-- `aux` — auxiliary buffer; used by `mad_std!` and available to workspace-aware
-  reducers through [`SigmaClip.workspace_auxbuffer`](@ref).
-
-# Constructors
-
-    SigmaClipWorkspace(T, n)     # explicit numeric type and capacity
-    SigmaClipWorkspace(x)        # T and n inferred from the input array
-
-# Example
-```julia
-ws = SigmaClipWorkspace(Float64, size(image, 2))
-for row in eachrow(image)
-    sigma_clip!(row; workspace = ws)
-end
-```
-"""
-struct SigmaClipWorkspace{T <: Number}
-    buf::Vector{T}
-    aux::Vector{T}
-end
-
-"""
-    SigmaClip.workspace_buffer(ws) -> AbstractVector
-
-Return the main mutable scratch buffer used by SigmaClip for packed valid data.
-Custom workspace types can participate in the allocation-free API by returning
-a writable, 1-indexed `AbstractVector`.
-"""
-workspace_buffer(ws) = throw(
-    ArgumentError(
-        "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"
-    )
-)
-
-"""
-    SigmaClip.workspace_auxbuffer(ws) -> AbstractVector
-
-Return the auxiliary mutable scratch buffer used by SigmaClip's specialised
-`mad_std!` path and workspace-aware statistics. Custom workspace types may
-return `nothing` when they do not provide auxiliary scratch space.
-"""
-workspace_auxbuffer(ws) = throw(
-    ArgumentError(
-        "unsupported workspace $(typeof(ws)); implement SigmaClip.workspace_buffer(::$(typeof(ws))) and SigmaClip.workspace_auxbuffer(::$(typeof(ws)))"
-    )
-)
-
-workspace_buffer(ws::SigmaClipWorkspace) = ws.buf
-workspace_auxbuffer(ws::SigmaClipWorkspace) = ws.aux
-
-SigmaClipWorkspace(T::Type{<:Number}, n::Int) =
-    SigmaClipWorkspace{T}(Vector{T}(undef, n), Vector{T}(undef, n))
-
-SigmaClipWorkspace(x::AbstractArray{T}) where {T <: Number} =
-    SigmaClipWorkspace(T, length(x))
-
-SigmaClipWorkspace(x::AbstractArray{<:Integer}) =
-    SigmaClipWorkspace(Float64, length(x))
-
-@inline _workspace_eltype(::Type{T}) where {T <: AbstractFloat} = T
-@inline _workspace_eltype(::Type{<:Integer}) = Float64
-@inline _workspace_eltype(::Type{T}) where {T <: Number} = T
-
-# @inline _scale_factor(::Type{T}, x) where {T <: AbstractFloat} = convert(T, x)
-# @inline _scale_factor(::Type{<:Number}, x) = float(x)
-
-@inline _nan_value(::Type{T}) where {T <: AbstractFloat} = T(NaN)
-@inline _nan_value(::Type{T}) where {T <: Number} = convert(T, NaN * oneunit(T))
-
-@inline _same_axes(a, b) = axes(a) == axes(b)
-# @inline _is_one_indexed(v) = firstindex(v) == 1
-@inline _is_nonnegative_finite(x) = isfinite(x) && x >= zero(x)
-@inline _validate_axes(name, a, x) = _same_axes(a, x) || throw(ArgumentError("$name axes mismatch: expected $(axes(x)), got $(axes(a))"))
-@inline _validate_sigma(name, value) = _is_nonnegative_finite(value) || throw(ArgumentError("$name must be finite and non-negative, got $value"))
-@inline _validate_maxiter(maxiter::Int) = (maxiter == -1 || maxiter >= 1) || throw(ArgumentError("maxiter must be -1 or a positive integer"))
-
-
-@inline function _validate_workspace_buffer(buf, ::Type{T}, n::Int, role::AbstractString) where {T <: Number}
-    buf isa AbstractVector || throw(
-        ArgumentError(
-            "workspace $role must be an AbstractVector, got $(typeof(buf))"
-        )
-    )
-    eltype(buf) === T || throw(
-        ArgumentError(
-            "workspace $role type mismatch: expected AbstractVector{$T}, got $(typeof(buf))"
-        )
-    )
-    length(buf) >= n || throw(
-        ArgumentError(
-            "workspace $role too short: length $(length(buf)) < required $n"
-        )
-    )
-    return nothing
-end
-
-@inline function _validate_workspace_auxbuffer(::Nothing, ::Type{T}, n::Int) where {T <: Number}
-    return nothing
-end
-
-@inline function _validate_workspace_auxbuffer(aux, ::Type{T}, n::Int) where {T <: Number}
-    return _validate_workspace_buffer(aux, T, n, "aux buffer")
-end
-
-@inline _requires_aux(_) = false
-@inline _requires_aux(::typeof(mad_std!)) = true
-
-@inline function _validate_required_aux(ws, center, spread)
-    if workspace_auxbuffer(ws) === nothing && (_requires_aux(center) || _requires_aux(spread))
-        throw(ArgumentError("workspace aux buffer is required by the selected statistic but workspace_auxbuffer returned nothing"))
+function validate_sigma(s::T) where {T <: Real}
+    if !isfinite(s) || s <= zero(T)
+        throw(ArgumentError("Sigma must be finite and strictly > 0"))
     end
     return nothing
 end
 
-@inline function _require_workspace_auxbuffer(ws)
-    aux = workspace_auxbuffer(ws)
-    aux === nothing && throw(
-        ArgumentError("workspace aux buffer is required by this statistic but workspace_auxbuffer returned nothing")
-    )
-    return aux
+function validate_axes(a::AbstractArray{Bool}, x::AbstractArray)
+    if axes(a) != axes(x)
+        throw(DimensionMismatch("Helper array must have the same axes as input array"))
+    end
+    return nothing
 end
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ::Nothing) where {T <: Number}
-    return SigmaClipWorkspace(T, n)
+function validate_maxiter(a::Integer)
+    if a < -1 || a == 0
+        throw(ArgumentError("Max iters must be > 0, else pass -1 to run until convergence"))
+    end
+    return nothing
 end
 
-@inline function _ensure_workspace(::Type{T}, n::Int, ws) where {T <: Number}
-    buf = workspace_buffer(ws)
-    aux = workspace_auxbuffer(ws)
-    _validate_workspace_buffer(buf, T, n, "buffer")
-    _validate_workspace_auxbuffer(aux, T, n)
-    return ws
-end
 
-@inline function _pack_valid!(buf::AbstractVector, x::AbstractArray, ::Nothing)
+
+#TODO we can write a version that includes missings
+@inline function pack_valid!(buf::AbstractVector, x::AbstractArray, ::Nothing)
     n = 0
     @inbounds for i in eachindex(x)
         val = x[i]
@@ -181,7 +49,7 @@ end
     return n
 end
 
-@inline function _pack_valid!(buf::AbstractVector, x::AbstractArray, exclude::AbstractArray{Bool})
+@inline function pack_valid!(buf::AbstractVector, x::AbstractArray, exclude::AbstractArray{Bool})
     n = 0
     @inbounds for i in eachindex(x, exclude)
         val = x[i]
@@ -194,36 +62,38 @@ end
 end
 
 
+
+@inline function is_valid_data(x, up, low)
+    if low <= x <= up
+        return GOOD_PIXEL
+    end
+    return BAD_PIXEL
+end
 # ─── Core bounds algorithm ────────────────────────────────────────────────────
 
 function _sigma_clip_bounds_impl(
         x::AbstractArray{T},
         exclude::M,
         ws::WS,
-        sigma_lower,
-        sigma_upper,
+        sigma_lower::Real,
+        sigma_upper::Real,
         center::C,
         spread::S,
         maxiter::Int,
     ) where {T, M, C, S, WS}
 
-    W = eltype(workspace_buffer(ws))
-    sigma_lower = _scale_factor(W, sigma_lower)
-    sigma_upper = _scale_factor(W, sigma_upper)
-    _validate_sigma("sigma_lower", sigma_lower)
-    _validate_sigma("sigma_upper", sigma_upper)
+    
+
     buf = workspace_buffer(ws)
 
-    n = _pack_valid!(buf, x, exclude)
-    n == 0 && return (zero(W), zero(W))
+    n = pack_valid!(buf, x, exclude)
+    n == 0 && throw(ArgumentError("No valid data to clip found"))
 
     current = n
     iter = 0
 
     while true
         c, s = _compute_stats(center, spread, current, ws)
-        c = convert(W, c)
-        s = convert(W, s)
 
         lower_bound = c - s * sigma_lower
         upper_bound = c + s * sigma_upper
@@ -248,20 +118,26 @@ function _sigma_clip_bounds_impl(
     return
 end
 
-@inline function _sigma_clip_bounds_checked(
+@inline function sigma_clip_bounds_checked(
         x::AbstractArray{T},
-        workspace,
+        workspace::WS,
         exclude::Union{Nothing, AbstractArray{Bool}},
         sigma_lower,
         sigma_upper,
         center::C,
         spread::S,
         maxiter::Int,
-    ) where {T, C, S}
-    !isnothing(exclude) && _validate_axes("exclude", exclude, x)
-    ws = _ensure_workspace(_workspace_eltype(T), length(x), workspace)
-    _validate_required_aux(ws, center, spread)
-    _validate_maxiter(maxiter)
+    ) where {T, C, S, WS}
+
+    !isnothing(exclude) && validate_axes(exclude, x)
+
+    ws = prepare_ws(x, spread, workspace)
+
+    validate_maxiter(maxiter)
+
+    validate_sigma(sigma_lower)
+    validate_sigma(sigma_upper)
+
     return _sigma_clip_bounds_impl(
         x, exclude, ws,
         sigma_lower, sigma_upper,
@@ -313,7 +189,9 @@ function sigma_clip_mask(
         spread::S = mad_std!,
         maxiter::Int = 5
     ) where {T, C, S}
-    target = falses(size(x))
+
+    target = fill(GOOD_PIXEL, size(x))
+
     return sigma_clip_mask!(
         x, target;
         workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
@@ -337,14 +215,16 @@ function sigma_clip_mask!(
         spread::S = mad_std!,
         maxiter::Int = 5
     ) where {T, C, S}
-
-    _validate_axes("target", target, x)
-    lb, ub = _sigma_clip_bounds_checked(
+    
+    validate_axes(target, x)
+    
+    lb, ub = sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
     )
+
     @inbounds for i in eachindex(x)
         val = x[i]
-        target[i] = isfinite(val) && val >= lb && val <= ub
+        target[i] = is_valid_data(val, ub, lb)#isfinite(val) && val >= lb && val <= ub
     end
     return target
 end
@@ -380,13 +260,15 @@ function sigma_clip!(
         maxiter::Int = 5
     ) where {T <: Number, C, S}
 
-    lb, ub = _sigma_clip_bounds_checked(
+    lb, ub = sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
     )
-    nan = _nan_value(T)
+    nan = T(NaN)
+
+
     @inbounds for i in eachindex(x)
         val = x[i]
-        if !isfinite(val) || val < lb || val > ub
+        if !is_valid_data(val, ub, lb)
             x[i] = nan
         end
     end
@@ -424,16 +306,16 @@ println("outliers: x < \$lb  or  x > \$ub")
 """
 function sigma_clip_bounds(
         x::AbstractArray{T};
-        workspace = nothing,
+        workspace::WS = nothing,
         exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma_lower = 3,
-        sigma_upper = 3,
+        sigma_lower::Real = 3,
+        sigma_upper::Real = 3,
         center::C = fast_median!,
         spread::S = mad_std!,
         maxiter::Int = 5
-    ) where {T, C, S}
+    ) where {T, C, S, WS}
 
-    return _sigma_clip_bounds_checked(
+    return sigma_clip_bounds_checked(
         x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
     )
 end

@@ -1,5 +1,21 @@
 
+
 const MAD_SF = 1.4826022185056018
+
+
+@inline @views function collect_buf_from_ws(ws::WS, n::Int)where {WS}
+    data = workspace_buffer(ws)
+    res = data[1:n]
+    return res
+end
+@inline @views function collect_aux_from_ws(ws::WS, n::Int) where {WS}
+    data = workspace_auxbuffer(ws)
+    res = data[1:n]
+    return res
+end
+
+
+
 # ─── Quickselect median ───────────────────────────────────────────────────────
 
 function _kth_smallest!(a::AbstractVector{T}, k::Int) where {T}
@@ -44,27 +60,19 @@ See also: [`mad_std!`](@ref)
 """
 function fast_median!(a::AbstractVector{T}) where {T}
     n = length(a)
-    n == 0 && return zero(T)
-    o = firstindex(a) - 1
     OUT = float(T)
+    n == 0 && return zero(OUT)
+    o = firstindex(a) - 1
 
     if iseven(n)
-        res = (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2
-    else 
-        res = _kth_smallest!(a, o + (n + 1) ÷ 2)
+        lo = OUT(_kth_smallest!(a, o + n ÷ 2))
+        hi = OUT(_kth_smallest!(a, o + n ÷ 2 + 1))
+        return (lo + hi) / 2
+    else
+        return OUT(_kth_smallest!(a, o + (n + 1) ÷ 2))
     end
-        return convert(OUT, res)
-    # return iseven(n) ? (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) / 2 :
-    #     _kth_smallest!(a, o + (n + 1) ÷ 2)
 end
 
-# function fast_median!(a::AbstractVector{<:Integer})
-#     n = length(a)
-#     n == 0 && return 0.0
-#     o = firstindex(a) - 1
-#     return iseven(n) ? 0.5 * (_kth_smallest!(a, o + n ÷ 2) + _kth_smallest!(a, o + n ÷ 2 + 1)) :
-#         _kth_smallest!(a, o + (n + 1) ÷ 2)
-# end
 
 """
     mad_std!(a::AbstractVector) -> float(eltype(T))
@@ -80,30 +88,34 @@ auxiliary buffer instead of allocating its own.
 
 See also: [`fast_median!`](@ref)
 """
-mad_std!(a::AbstractVector{T}) where {T} = mad_std!(a, similar(a))
+mad_std!(a::AbstractVector{T}) where {T} = mad_std!(a, Vector{float(T)}(undef, length(a)))
 
-function mad_std!(a::AbstractVector{T}, aux::AbstractVector{T}) where {T <: Number}
+function mad_std!(a::AbstractVector{T}, aux::AbstractVector{B}) where {T <: Number, B}
     n = length(a)
-    n == 0 && return zero(T)
+    OUT = float(T)
+    n == 0 && return zero(OUT)
 
     m = fast_median!(a)
     @inbounds for i in eachindex(a)
         aux[i] = abs(a[i] - m)
     end
-    return convert(float(T), fast_median!(aux) * MAD_SF)#_scale_factor(T, 1.4826022185056018)
+    res = fast_median!(aux) * MAD_SF
+    return convert(OUT, res)
 end
 
-# function mad_std!(a::AbstractVector{<:Integer})
-#     n = length(a)
-#     n == 0 && return 0.0
+#Helper for fast-path with precomputed median
+function mad_std!(a::AbstractVector{T}, aux::AbstractVector{B}, m) where {T <: Number, B}
+    n = length(a)
+    OUT = float(T)
+    n == 0 && return zero(OUT)
 
-#     m = fast_median!(a)
-#     aux = Vector{Float64}(undef, n)
-#     @inbounds for i in eachindex(a)
-#         aux[i] = abs(a[i] - m)
-#     end
-#     return fast_median!(aux) * 1.4826022185056018
-# end
+    @inbounds for i in eachindex(a)
+        aux[i] = abs(a[i] - m)
+    end
+    res = fast_median!(aux) * MAD_SF
+    return convert(OUT, res)
+end
+
 
 """
     SigmaClip.statistic(f, ws, n::Int)
@@ -129,23 +141,18 @@ values because SigmaClip compacts that buffer after computing the statistics.
 The auxiliary buffer may be used freely as scratch.
 """
 @inline function statistic(f::F, ws::WS, n::Int) where {F, WS}
-    data = @inbounds view(workspace_buffer(ws), 1:n)
+    data = collect_buf_from_ws(ws, n)
     return f(data)
 end
 
 
 #TODO JETS suggest possible type inference problem with eltype(aux)
 @inline function statistic(::typeof(mad_std!), ws::WS, n::Int) where {WS}
-    data = @inbounds view(workspace_buffer(ws), 1:n)
-    aux = @inbounds view(_require_workspace_auxbuffer(ws), 1:n)
+    data = collect_buf_from_ws(ws, n)
+    aux = collect_aux_from_ws(ws, n)
 
 
-    m = fast_median!(data)
-    @inbounds for i in eachindex(data)
-        aux[i] = abs(data[i] - m)
-    end
-
-    return fast_median!(aux) * MAD_SF#  _scale_factor(T, 1.4826022185056018)
+    return mad_std!(data, aux)
 end
 
 
@@ -173,23 +180,18 @@ end
 # quickselect on aux to get the MAD.
 #
 @inline function _compute_stats(
-        ::typeof(fast_median!), 
+        ::typeof(fast_median!),
         ::typeof(mad_std!),
         n::Int,
-        ws::WS
+        ws::WS 
     ) where {WS}
 
-    data = @inbounds view(workspace_buffer(ws), 1:n)
-    aux = @inbounds view(_require_workspace_auxbuffer(ws), 1:n)
+    data = collect_buf_from_ws(ws, n)
+    aux = collect_aux_from_ws(ws, n)
 
     m = fast_median!(data)                 # quickselect on data — data reordered
-
-    @inbounds for i in eachindex(data)      # write deviations to aux, data intact
-        aux[i] = abs(data[i] - m)
-    end
-    mad = fast_median!(aux)                 # quickselect on aux
-    #r = _scale_factor(T, 1.4826022185056018)
-    return m, mad * MAD_SF # _scale_factor(T, 1.4826022185056018)
+    mad = mad_std!(data, aux, m)
+    return (m, mad)
 end
 
 # Specialisation 2 — (FastMedian, generic spread)
@@ -198,12 +200,13 @@ end
 # fast_median! has reordered buf is safe.
 #
 @inline function _compute_stats(
-        ::typeof(fast_median!), spread_f,
+        ::typeof(fast_median!), 
+        spread_f::S,
         n::Int,
         ws::WS
-    ) where {WS}
-    
-    data = @inbounds view(workspace_buffer(ws), 1:n)
+    ) where {S, WS}
+
+    data = collect_buf_from_ws(ws, n)
     m = fast_median!(data)
     s = statistic(spread_f, ws, n)
     return m, s
@@ -218,9 +221,13 @@ end
         spread_f::S,
         n::Int,
         ws::WS
-    ) where {C, S, WS}
+    ) where {WS, C, S}
 
     c = statistic(center_f, ws, n)
     s = statistic(spread_f, ws, n)
     return c, s
 end
+
+
+@inline need_aux(::typeof(mad_std!)) = true
+@inline need_aux(_) = false
