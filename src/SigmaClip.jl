@@ -6,7 +6,7 @@ include("workspace.jl")
 include("stats.jl")
 
 export sigma_clip_mask, sigma_clip_mask!, sigma_clip!, sigma_clip
-export WorkSpace
+export SigmaClipWorkspace
 export fast_median!, mad_std!
 
 const BAD_PIXEL = false

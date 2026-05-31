@@ -36,7 +36,7 @@ let
 
     for (label, n) in cases
         data = _sigma_clip_input(n)
-        workspace = SigmaClipWorkspace(Float64, n)
+        workspace = SigmaClipWorkspace(similar(data), similar(data))
 
         SUITE["sigma_clip"]["out_of_place"]["sigma_clip"][label] =
             @benchmarkable sigma_clip($data; workspace = $workspace)
@@ -48,13 +48,13 @@ let
         SUITE["sigma_clip"]["in_place"]["sigma_clip!"][label] =
             @benchmarkable sigma_clip!(x; workspace = ws) setup = begin
                 x = copy($data)
-                ws = SigmaClipWorkspace(Float64, $n)
+                ws = SigmaClipWorkspace(similar($data), similar($data))
             end
         SUITE["sigma_clip"]["in_place"]["sigma_clip_mask!"][label] =
             @benchmarkable sigma_clip_mask!(x, target; workspace = ws) setup = begin
                 x = copy($data)
                 target = falses($n)
-                ws = SigmaClipWorkspace(Float64, $n)
+                ws = SigmaClipWorkspace(similar($data), similar($data))
             end
     end
 end

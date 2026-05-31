@@ -19,7 +19,7 @@ PublicAPIWorkspace(x::AbstractArray{T}) where {T} =
 SigmaClip.workspace_buffer(ws::PublicAPIWorkspace) = ws.buf
 SigmaClip.workspace_auxbuffer(ws::PublicAPIWorkspace) = ws.aux
 SigmaClip.workspace_buffer(ws::NoAuxWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::NoAuxWorkspace) = nothing
+SigmaClip.workspace_auxbuffer(::NoAuxWorkspace) = nothing
 
 struct WorkspaceCenter end
 struct WorkspaceSpread end

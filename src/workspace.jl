@@ -1,13 +1,13 @@
 
 
 # main wrapper of Workspace for type stability
-struct WorkSpace{C<:AbstractVector, S<:Union{Nothing, AbstractVector}}
+struct SigmaClipWorkspace{C <: AbstractVector, S <: Union{Nothing, AbstractVector}}
     buf::C 
     aux::S 
 end
 
-@inline workspace_buffer(ws::WorkSpace) = ws.buf
-@inline workspace_auxbuffer(ws::WorkSpace) = ws.aux
+@inline workspace_buffer(ws::SigmaClipWorkspace) = ws.buf
+@inline workspace_auxbuffer(ws::SigmaClipWorkspace) = ws.aux
 
 
 """
@@ -47,15 +47,22 @@ function prepare_ws(data::AbstractArray{T}, spread::S, ::Nothing) where {T, S}
         aux = nothing
     end
 
-    return WorkSpace(buf, aux)
+    return SigmaClipWorkspace(buf, aux)
 end
 
 
 function prepare_ws(data::AbstractArray{T}, spread::S, ws::WS) where {T, S, WS}
+    #most of this checks should be resolved at comp-time
     n = length(data)
 
     buf = workspace_buffer(ws)
     aux = workspace_auxbuffer(ws)
+
+    is_vec(buf)
+
+    if eltype(buf) !== T 
+        throw(ArgumentError("Provided buffer Type $(eltype(buf)) do not match data Type $T "))
+    end
 
     if length(buf) < n
         throw(DimensionMismatch(
@@ -76,4 +83,8 @@ function prepare_ws(data::AbstractArray{T}, spread::S, ws::WS) where {T, S, WS}
 
     return ws
 end
+
+
+is_vec(::AbstractVector) = nothing
+is_vec(_) = throw(ArgumentError("Workspace main buffer must be of type <: AbstractVector"))
 
