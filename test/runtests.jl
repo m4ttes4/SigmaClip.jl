@@ -153,6 +153,11 @@ end
     end
 end
 
+@testset "sigma_clip_stats" begin
+    @test SigmaClip.sigma_clip_stats(Float64[1, 1, 1, 99]) == (1.0, 0.0)
+    @test SigmaClip.sigma_clip_stats(Float64[1, 1, 1, 99], length, sum) == (3, 3.0)
+end
+
 @testset "sigma_clip_mask" begin
     @testset "diversi tipi di input" begin
         @test sigma_clip_mask(Float64[1, 1, 1, 9]) == Bool[1, 1, 1, 0]

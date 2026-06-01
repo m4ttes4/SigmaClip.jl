@@ -1,35 +1,26 @@
 [![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 [![code style: runic](https://img.shields.io/badge/code_style-%E1%9A%B1%E1%9A%A2%E1%9A%BE%E1%9B%81%E1%9A%B2-black)](https://github.com/fredrikekre/Runic.jl)
+
 # SigmaClip.jl
 
 > [!NOTE]
-> The algorithmic logic implemented in this module is inspired by the `sigma_clip`
-> implementation found in the Astropy Python library.
+> The algorithmic logic implemented in this module is inspired by the
+> `sigma_clip` implementation in the Astropy Python library.
 
-SigmaClip.jl provides a lightweight, highly efficient, and robust toolset for
-identifying and rejecting outliers using iterative sigma clipping. It is
-primarily designed for **astrophysical data processing** — cleaning light
-curves, removing cosmic rays from CCD frames, rejecting bad pixels in image
-stacks — but works equally well on any numeric array: 1-D, 2-D
-images, or higher-dimensional data.
+SigmaClip.jl identifies outliers in numeric arrays with iterative sigma
+clipping. It is designed for scientific workloads such as light-curve cleaning,
+cosmic-ray rejection, and image-stack processing, but it works on any numeric
+array.
 
-The library is designed to be numerically stable, handling `NaN` and `Inf`
-values gracefully, and offers both a convenient one-liner API and a
-zero-allocation path for high-throughput workloads.
+The package provides:
 
-## Overview
+- an out-of-place API that returns a clipped copy,
+- an in-place API that writes `NaN` into rejected entries,
+- validity masks where `true` means retained,
+- final clipping bounds without building a mask,
+- a workspace path for allocation-sensitive loops.
 
-The algorithm works by computing a centre estimate and a dispersion estimate on
-the current "good" data, rejecting values that fall outside
-`[centre − σ_lower × dispersion, centre + σ_upper × dispersion]`,
-then repeating on the surviving values until convergence or until `maxiter`
-iterations have been reached.
-
-By default the centre is the **median** (via an allocation-free quickselect)
-and the dispersion is the **MAD-std** (Median Absolute Deviation scaled by
-1.4826). Both are swappable via keyword arguments.
-
-SigmaClip.jl has **no external dependencies**.
+SigmaClip.jl has no external runtime dependencies.
 
 ---
 
@@ -42,299 +33,346 @@ Pkg.add("SigmaClip")
 
 ---
 
-## Quick start
+## How It Works
+
+Sigma clipping repeatedly:
+
+1. estimates a center and dispersion from the currently retained finite values,
+2. computes bounds
+   `[center - sigma_lower * dispersion, center + sigma_upper * dispersion]`,
+3. keeps values inside those bounds,
+4. stops at convergence or after `maxiter` iterations.
+
+Defaults:
+
+- `center = fast_median!`
+- `spread = mad_std!`
+- `sigma_lower = 3`
+- `sigma_upper = 3`
+- `maxiter = 5`
+- `exclude = nothing`
+- `workspace = nothing`
+
+`fast_median!` uses in-place quickselect. `mad_std!` computes the median
+absolute deviation scaled by `1.4826`.
+
+---
+
+## Quick Start
 
 ```julia
 using SigmaClip
 
-data = randn(1000)
-data[42]  = 50.0    # high outlier
-data[123] = -30.0   # low outlier
+data = [1.0, 1.0, 1.0, 50.0, NaN]
 
-# Out-of-place: returns a copy with outliers replaced by NaN
-clean = sigma_clip(data)
+# Out-of-place: returns a copy with outliers and non-finite values set to NaN.
+clipped = sigma_clip(data)
 
-# In-place: modifies data directly
-sigma_clip!(data)
-
-# Mask only: returns a BitArray (true = good / retained pixel)
+# Mask only: true means finite and retained by the final bounds.
 mask = sigma_clip_mask(data)
-clean = data[mask]
+retained = data[mask]
+
+# Bounds only: useful if you want to classify values yourself.
+lower, upper = sigma_clip_bounds(data)
 ```
+
+`data` is unchanged by `sigma_clip`, `sigma_clip_mask`, and
+`sigma_clip_bounds`.
 
 ---
 
-## Common recipes
+## Common Recipes
 
-### Use a mask
+### Return a clipped copy
 
-Use `sigma_clip_mask` when you want to keep the original data unchanged and
-select the retained values yourself.
+Use `sigma_clip` when you want to keep the original array unchanged.
 
 ```julia
-mask = sigma_clip_mask(data)
-clean = data[mask]
+using SigmaClip
+
+data = [2.0, 2.0, 2.0, 100.0]
+clipped = sigma_clip(data)
+
+isnan(clipped[end])
+# true
+
+data[end]
+# 100.0
 ```
 
-The mask uses `true` for finite values retained by the final clipping bounds.
+Integer inputs are converted with `float.(x)` so the result can represent
+`NaN`.
 
-### Modify a floating-point array in-place
+```julia
+clipped = sigma_clip([1, 1, 1, 99])
+
+eltype(clipped)
+# Float64
+```
+
+### Modify a floating-point array in place
 
 Use `sigma_clip!` when the input array can store `NaN`.
 
 ```julia
-data = randn(500)
-data[end] = 1e6
+data = [0.0, 0.0, 0.0, 30.0]
 
 sigma_clip!(data)
+
+isnan(data[end])
+# true
 ```
 
-Integer arrays cannot store `NaN`; use `sigma_clip(data)` for integer input, or
-convert the input to a floating-point array before calling `sigma_clip!`.
+Integer arrays cannot store `NaN`; use `sigma_clip(x)` for integer input, or
+convert the input before calling `sigma_clip!`.
+
+### Build a validity mask
+
+Use `sigma_clip_mask` when you want to select retained values yourself.
+
+```julia
+data = [1.0, 1.0, 1.0, 50.0, Inf]
+mask = sigma_clip_mask(data)
+
+mask
+# 5-element BitVector:
+#  1
+#  1
+#  1
+#  0
+#  0
+
+retained = data[mask]
+# [1.0, 1.0, 1.0]
+```
+
+For repeated calls, write into a pre-allocated boolean array:
+
+```julia
+target = falses(length(data))
+sigma_clip_mask!(data, target)
+```
+
+### Get the final bounds
+
+Use `sigma_clip_bounds` when you only need the thresholds.
+
+```julia
+data = [0.0, 0.0, 0.0, 10.0]
+lower, upper = sigma_clip_bounds(data)
+
+valid = isfinite.(data) .& (lower .<= data .<= upper)
+# Bool[true, true, true, false]
+```
 
 ### Use mean and standard deviation
 
-SigmaClip does not depend on `Statistics`, but your project can use it for
-custom centre and spread functions.
+SigmaClip does not depend on `Statistics`, but you can pass reducers from it.
 
 ```julia
 using Statistics
+using SigmaClip
 
-sigma_clip!(data; center=mean, spread=std)
+data = [1.0, 1.0, 1.0, 8.0]
+sigma_clip!(data; center = mean, spread = std)
 ```
 
 ### Use asymmetric thresholds
 
-Set the lower and upper thresholds independently when only one side of the
-distribution should be clipped aggressively.
+Set lower and upper thresholds independently.
 
 ```julia
-sigma_clip!(data; sigma_lower=5, sigma_upper=2)
+data = [-20.0, 0.0, 0.0, 0.0, 5.0]
+sigma_clip!(data; sigma_lower = 2, sigma_upper = 4)
 ```
 
 ### Exclude values from bound estimation
 
-Use `exclude` for values that should not influence the estimated centre and
-spread. Excluded values are still classified against the final bounds; they are
-not automatically forced to `false` in the mask or `NaN` in the clipped output.
+Use `exclude` for values that should not influence the estimated center and
+spread. Excluded values are still classified against the final bounds.
 
 ```julia
-exclude = falses(size(data))
-exclude[known_bad_index] = true
+data = [-100.0, 0.0, 0.0, 0.0, 50.0]
+exclude = Bool[true, false, false, false, true]
 
-mask = sigma_clip_mask(data; exclude=exclude)
+mask = sigma_clip_mask(data; exclude)
+# Bool[false, true, true, true, false]
 ```
 
 ---
 
-## API reference
+## API Reference
 
-### `sigma_clip(x; kwargs...) -> Array{<:Number}`
+### `sigma_clip(x; kwargs...) -> AbstractArray`
 
-Out-of-place sigma clipping. Returns a copy of `x` with outliers replaced by
-`NaN`. Integer arrays are promoted to `Float64`; numeric arrays with units keep
-their element type when it can represent `NaN`.
+Run sigma clipping on a copy of `x`. The result contains `NaN` for non-finite
+values and outliers. Integer inputs are promoted with `float.(x)`.
 
 ### `sigma_clip!(x; kwargs...) -> x`
 
-In-place version. Replaces outliers in `x` with `NaN`. Requires an array whose
-element type can represent `NaN`.
+Run sigma clipping in place. Non-finite values and outliers are replaced with
+`NaN`. The element type of `x` must be able to represent `NaN`.
 
 ### `sigma_clip_mask(x; kwargs...) -> BitArray`
 
-Returns a boolean mask where `true` marks a finite, retained value. The input
-array is never modified.
+Return a validity mask with the same shape as `x`. `true` means finite and
+retained by the final bounds.
 
 ### `sigma_clip_mask!(x, target; kwargs...) -> target`
 
-Writes pixel-validity flags into a pre-allocated boolean `target` with the same
-axes as `x`.
+Write the validity mask into the pre-allocated boolean array `target`.
+`target` must have the same axes as `x`.
 
-### `SigmaClip.sigma_clip_bounds(x; kwargs...) -> (lb, ub)`
+### `sigma_clip_bounds(x; kwargs...) -> (lower, upper)`
 
-Returns the final convergence bounds `(lower, upper)` without modifying `x` or
-producing a mask. Useful when you only need to know the thresholds.
+Return the final lower and upper sigma-clipping bounds. This does not modify
+`x` and does not return a mask.
 
-```julia
-lb, ub = SigmaClip.sigma_clip_bounds(data; sigma_lower=2.5)
-println("outliers: x < $lb  or  x > $ub")
-```
-
-### Keyword arguments
+### Keywords
 
 | Keyword | Default | Description |
 | :--- | :--- | :--- |
-| `sigma_lower` | `3` | Finite, non-negative rejection threshold below the centre. |
-| `sigma_upper` | `3` | Finite, non-negative rejection threshold above the centre. |
-| `maxiter` | `5` | Maximum number of clipping iterations. Must be `-1` or a positive integer; pass `-1` to run until convergence. |
-| `center` | `fast_median!` | Centre estimator. Any callable `f(v::AbstractVector) -> scalar`, or a workspace-aware reducer via `SigmaClip.statistic(f, ws, n)`. |
-| `spread` | `mad_std!` | Dispersion estimator. Any callable `f(v::AbstractVector) -> scalar`, or a workspace-aware reducer via `SigmaClip.statistic(f, ws, n)`. |
-| `exclude` | `nothing` | Boolean array with the same axes as `x`; `true` excludes a value from bound estimation only. |
-| `workspace` | `nothing` | Pre-allocated workspace for allocation-free operation; accepts [`SigmaClipWorkspace`](#zero-allocation-hot-loops) or a custom type implementing `SigmaClip.workspace_buffer` and `SigmaClip.workspace_auxbuffer`. The auxiliary buffer may be `nothing` when the selected statistics do not use it. |
+| `workspace` | `nothing` | Optional pre-allocated workspace. |
+| `exclude` | `nothing` | Boolean array with the same axes as `x`; `true` excludes a value from bound estimation. |
+| `sigma_lower` | `3` | Lower sigma threshold. Must be finite and strictly positive. |
+| `sigma_upper` | `3` | Upper sigma threshold. Must be finite and strictly positive. |
+| `center` | `fast_median!` | Center estimator used at each iteration. |
+| `spread` | `mad_std!` | Dispersion estimator used at each iteration. |
+| `maxiter` | `5` | Maximum number of iterations. Use `-1` to run until convergence. |
+
+All public clipping functions accept the same keywords.
 
 ---
 
-## Built-in statistics
+## Built-In Statistics
 
-SigmaClip exports two reducer functions that also unlock specialised, faster
-code paths when passed directly as `center=fast_median!` and `spread=mad_std!`.
-The dispatch is resolved entirely at compile time via Julia's multiple
-dispatch.
+SigmaClip exports two reducer functions:
+
+- `fast_median!`
+- `mad_std!`
+
+They can be used directly, and they also select optimized paths when passed as
+`center = fast_median!` and `spread = mad_std!`.
 
 ### `fast_median!`
 
-Pass as `center=fast_median!` (the default) to select the built-in
-allocation-free O(n) quickselect median. When combined with `spread=mad_std!`,
-the median is computed once and shared with the MAD calculation.
-
-`fast_median!` is also exported as a standalone utility if you need a fast
-in-place median elsewhere:
-
 ```julia
 buf = [3.0, 1.0, 4.0, 1.0, 5.0]
-m = fast_median!(buf)   # reorders buf, returns 3.0
+m = fast_median!(buf)
+
+m
+# 3.0
 ```
 
-When `fast_median!` is used through `sigma_clip`, it reorders SigmaClip's
-internal workspace, not the user's input array.
+`fast_median!` mutates the order of `buf`. When used through `sigma_clip`, it
+only mutates SigmaClip's internal workspace, not the user's input array.
 
 ### `mad_std!`
 
-Pass as `spread=mad_std!` to use the Median Absolute Deviation scaled by
-1.4826 to match the standard deviation of a normal distribution:
-
 ```julia
-# Robust clipping with shared median computation
-sigma_clip!(data; spread=mad_std!)
+buf = [1.0, 1.0, 1.0, 10.0]
+s = mad_std!(buf)
 ```
 
-The standalone `mad_std!(v)` utility mutates `v` and allocates an auxiliary
-buffer. Inside SigmaClip, `mad_std!` uses the provided workspace and can run
-without allocations.
+`mad_std!` mutates its input. The one-argument form allocates an auxiliary
+buffer. Inside SigmaClip, the workspace path provides that auxiliary buffer.
 
 ---
 
-## Zero-allocation hot loops
+## Zero-Allocation Hot Loops
 
-When applying sigma clipping to thousands of arrays (e.g. every row of a 2-D
-image), the internal buffer allocations can become a bottleneck. Allocate a
-`SigmaClipWorkspace` once and pass it via the `workspace` keyword to make every
-subsequent call allocation-free. External packages may also pass a custom
-workspace type, as long as it exposes the main buffer SigmaClip needs.
+When applying sigma clipping many times, allocate workspace once and pass it
+with the `workspace` keyword.
 
 ```julia
-# Allocate once — must be at least as long as each array being processed
-ws = SigmaClipWorkspace(Float64, size(image, 2))
+using SigmaClip
+
+image = randn(128, 1024)
+workspace = SigmaClipWorkspace(
+    Vector{Float64}(undef, size(image, 2)),
+    Vector{Float64}(undef, size(image, 2)),
+)
 
 for row in eachrow(image)
-    sigma_clip!(row; workspace=ws)
+    sigma_clip!(row; workspace)
 end
 ```
 
-The built-in workspace holds two internal buffers:
+`SigmaClipWorkspace` stores two buffers:
 
-- `buf` — working copy of the valid elements, compacted in-place each iteration.
-- `aux` — auxiliary buffer used by `mad_std!` and available to workspace-aware
-  reducers through `SigmaClip.workspace_auxbuffer(ws)`.
+- `buf`: packed finite values retained during sigma clipping,
+- `aux`: auxiliary scratch space used by `mad_std!` and workspace-aware
+  reducers.
 
-Both buffers are the same length. The workspace itself does not store the
-current compacted length; workspace-aware reducers receive it as the `n`
-argument to `SigmaClip.statistic(f, ws, n)`.
-
-### Constructors
+For custom workflows that do not need auxiliary scratch space, `aux` may be
+`nothing`, but the default `spread = mad_std!` requires it.
 
 ```julia
-SigmaClipWorkspace(Float64, n)   # explicit type and capacity
-SigmaClipWorkspace(my_array)     # T and length inferred from the array
-                                 # (integers are promoted to Float64)
+workspace = SigmaClipWorkspace(Vector{Float64}(undef, length(data)), nothing)
+sigma_clip!(data; workspace, spread = x -> 1.0)
 ```
 
-If you pass a workspace whose buffer is shorter than the input array, an
-`ArgumentError` is thrown immediately before any computation begins.
+If the workspace buffers are shorter than the input array, SigmaClip throws
+before running the algorithm.
 
-### Custom workspace protocol
+---
 
-Custom workspace types participate in the same API by implementing two methods:
+## Custom Workspace Types
+
+External workspace types can participate by implementing:
 
 ```julia
-SigmaClip.workspace_buffer(ws)    # main packed-data buffer
-SigmaClip.workspace_auxbuffer(ws) # auxiliary buffer, or nothing
+SigmaClip.workspace_buffer(ws)
+SigmaClip.workspace_auxbuffer(ws)
 ```
 
-`workspace_buffer(ws)` is required. It must return a writable, 1-indexed
-`AbstractVector` with the exact numeric type SigmaClip requires for the input
-being processed (`Float32` for `Float32` input, the quantity type for unitful
-input, `Float64` for integer input, etc.) and length at least `length(x)`.
+`workspace_buffer(ws)` must return a writable, 1-indexed `AbstractVector` with
+the same element type as the input and length at least `length(x)`.
 
-`workspace_auxbuffer(ws)` is optional. It may return another writable
-`AbstractVector` with the same type and capacity, or it may return `nothing`
-when the selected statistics do not need auxiliary scratch space. If a custom
-statistic calls `SigmaClip.workspace_auxbuffer(ws)`, it is the statistic
-author's responsibility to ensure that the workspace actually provides an aux
-buffer before indexing it. Built-in `mad_std!` requires aux and will throw an
-`ArgumentError` when aux is `nothing`.
+`workspace_auxbuffer(ws)` may return another writable vector or `nothing`. It
+must return a vector when the selected spread function needs auxiliary scratch
+space, including the built-in `mad_std!`.
 
 ```julia
-struct ExternalWorkspace{T}
-    tmp1::Vector{T}
-    tmp2::Vector{T}
-    tmp3::Vector{T}
+struct ExternalWorkspace
+    buf::Vector{Float64}
+    aux::Vector{Float64}
 end
 
-SigmaClip.workspace_buffer(ws::ExternalWorkspace) = ws.tmp2
-SigmaClip.workspace_auxbuffer(ws::ExternalWorkspace) = ws.tmp3
+SigmaClip.workspace_buffer(ws::ExternalWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::ExternalWorkspace) = ws.aux
 
-ws = ExternalWorkspace(zeros(Float64, 1024), zeros(Float64, 1024), zeros(Float64, 1024))
-sigma_clip!(data; workspace=ws)
-```
+workspace = ExternalWorkspace(
+    Vector{Float64}(undef, length(data)),
+    Vector{Float64}(undef, length(data)),
+)
 
-For statistics that only need the packed data buffer, aux can be omitted:
-
-```julia
-struct NoAuxWorkspace{T}
-    buf::Vector{T}
-end
-
-SigmaClip.workspace_buffer(ws::NoAuxWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::NoAuxWorkspace) = nothing
-
-ws = NoAuxWorkspace(zeros(Float64, length(data)))
-sigma_clip!(data; workspace=ws, spread=x -> 1.0)
+sigma_clip!(data; workspace)
 ```
 
 ---
 
-## Custom statistics
+## Custom Statistics
 
 Any callable that accepts an `AbstractVector` and returns a scalar can be used
 as `center` or `spread`.
 
 ```julia
 using Statistics
+using SigmaClip
 
 iqr_spread(v) = (quantile(v, 0.75) - quantile(v, 0.25)) / 1.349
-sigma_clip!(data; spread=iqr_spread)
+
+data = [1.0, 1.0, 1.0, 10.0]
+sigma_clip!(data; spread = iqr_spread)
 ```
 
-Custom reducers receive a mutable view of SigmaClip's internal workspace
-buffer. They may reorder that view, but they must preserve the data values.
-Overwriting values with derived quantities can lead to incorrect clipping in
-later iterations.
-
----
-
-## Advanced extension hooks
+Reducers receive a mutable view of SigmaClip's internal workspace. They may
+reorder it, but they must preserve the values. Do not overwrite the data with
+derived quantities.
 
 Reducers that need direct workspace access can extend
-`SigmaClip.statistic(f, ws, n)`. SigmaClip passes the concrete workspace and
-the number of compacted values currently stored in `workspace_buffer(ws)`.
-The default method is equivalent to:
-
-```julia
-SigmaClip.statistic(f, ws, n) = f(@view SigmaClip.workspace_buffer(ws)[1:n])
-```
-
-Custom methods can use the auxiliary buffer without allocating:
+`SigmaClip.statistic(f, ws, n)`.
 
 ```julia
 struct MeanAbsDeviation end
@@ -351,51 +389,26 @@ function SigmaClip.statistic(::MeanAbsDeviation, ws, n::Int)
     return sum(aux) / length(aux)
 end
 
-sigma_clip!(data; spread=MeanAbsDeviation())
+data = [1.0, 1.0, 1.0, 10.0]
+sigma_clip!(data; spread = MeanAbsDeviation())
 ```
-
-Dispatch on your workspace type when a reducer depends on fields beyond the
-two standard buffers:
-
-```julia
-struct CalibratedWorkspace{T}
-    buf::Vector{T}
-    aux::Vector{T}
-    gain::T
-end
-
-SigmaClip.workspace_buffer(ws::CalibratedWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::CalibratedWorkspace) = ws.aux
-
-struct GainCorrectedMean end
-
-function SigmaClip.statistic(::GainCorrectedMean, ws::CalibratedWorkspace, n::Int)
-    data = @view SigmaClip.workspace_buffer(ws)[1:n]
-    return ws.gain * sum(data) / length(data)
-end
-```
-
-Workspace-aware reducers may reorder `workspace_buffer(ws)[1:n]`, but they
-must preserve those values because SigmaClip compacts the same buffer after
-computing the statistics. `workspace_auxbuffer(ws)[1:n]` and any extra
-workspace fields may be used as scratch.
 
 ---
 
-## Performance summary
+## Performance Notes
 
-| Configuration | Quickselects / iteration | Notes |
-| :--- | :---: | :--- |
-| `fast_median!` + `mad_std!` (**default**) | 2 | median shared; `aux` written once per iteration |
-| `fast_median!` + `std` | 1 | `std` is a single O(n) pass; less robust |
-| custom `center` + `mad_std!` | 2 + centre | MAD uses `aux` without allocating; median computed independently |
-| custom `center` + custom `spread` | — | generic statistic protocol |
+| Configuration | Notes |
+| :--- | :--- |
+| `fast_median!` + `mad_std!` | Default robust path; median is shared with MAD. |
+| `fast_median!` + `std` | One quickselect plus standard deviation. |
+| custom `center` + custom `spread` | Uses the generic statistic protocol. |
 
-The quickselect used internally (Wirth's algorithm) has O(n) average time and
-O(n²) worst case. On typical scientific data the average case dominates.
+The quickselect used by `fast_median!` has O(n) average time and O(n²) worst
+case. On typical scientific arrays, the average case dominates.
 
 ---
 
 ## License
 
-SigmaClip.jl is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+SigmaClip.jl is licensed under the MIT License. See [LICENSE](LICENSE) for
+details.
