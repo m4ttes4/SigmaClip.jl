@@ -156,7 +156,7 @@ end
 end
 
 
-# ─── _compute_stats ───────────────────────────────────────────────────────────
+# ─── compute_stats ───────────────────────────────────────────────────────────
 #
 # Returns (centre, dispersion) for the n values packed in buf[1:n].
 #
@@ -179,7 +179,7 @@ end
 # We compute |buf[i] − m| into aux[1:n] (leaving buf intact), then run a second
 # quickselect on aux to get the MAD.
 #
-@inline function _compute_stats(
+@inline function compute_stats(
         ::typeof(fast_median!),
         ::typeof(mad_std!),
         n::Int,
@@ -199,7 +199,7 @@ end
 # Most spread functions are permutation-invariant, so calling them after
 # fast_median! has reordered buf is safe.
 #
-@inline function _compute_stats(
+@inline function compute_stats(
         ::typeof(fast_median!), 
         spread_f::S,
         n::Int,
@@ -216,7 +216,7 @@ end
 #
 # Both reducers are plain callables.  No buffer reuse assumptions are made.
 #
-@inline function _compute_stats(
+@inline function compute_stats(
         center_f::C,
         spread_f::S,
         n::Int,

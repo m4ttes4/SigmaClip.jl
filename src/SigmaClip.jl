@@ -93,7 +93,7 @@ function sigma_clip_compact_unsafe(
     iter = 0
 
     while true
-        c, s = _compute_stats(center, spread, current, ws)
+        c, s = compute_stats(center, spread, current, ws)
 
         lower_bound = c - s * sigma_lower
         upper_bound = c + s * sigma_upper
