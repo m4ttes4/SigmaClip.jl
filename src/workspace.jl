@@ -75,7 +75,7 @@ function prepare_ws(data::AbstractArray{T}, spread::S, ws::WS) where {T, S, WS}
         if length(aux) < n
             throw(
                 DimensionMismatch(
-                    "workspace aux buffer too short: length $(length(buf)) < required at least $n"
+                    "workspace aux buffer too short: length $(length(aux)) < required at least $n"
                 )
             )
         end

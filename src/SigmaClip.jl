@@ -84,6 +84,7 @@ function sigma_clip_compact_unsafe(
 
     
 
+    # TODO better to specialize on this?
     buf = workspace_buffer(ws)
 
     n = pack_valid!(buf, x, exclude)
@@ -322,7 +323,7 @@ function sigma_clip_mask(
         maxiter::Int = 5
     ) where {T, C, S}
 
-    target = fill(GOOD_PIXEL, size(x))
+    target = trues(size(x))
 
     return sigma_clip_mask!(
         x, target;
@@ -644,7 +645,7 @@ function sigma_clip_stats(
     validate_sigma(sigma_lower)
     validate_sigma(sigma_upper)
 
-    _,_,n = sigma_clip_compact(
+    _, _, n = sigma_clip_compact_unsafe(
         x, exclude, ws,
         sigma_lower, sigma_upper,
         center, spread, maxiter
