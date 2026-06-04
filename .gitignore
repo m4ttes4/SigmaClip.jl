@@ -6,3 +6,4 @@ benchmarks/median_mad_astropy_benchmark.jl
 benchmarks/median_mad_astropy_benchmark.pdf
 benchmarks/median_mad_astropy_benchmark.png
 benchmarks/median_mad_astropy_results.csv
+NEWS.md
