@@ -1,1200 +1,439 @@
 using Test
 using SigmaClip
 using Statistics
-using Random
 
-# Reference median (sort-based, used to validate fast_median!)
-ref_median(v) = begin
-    s = sort(v)
-    n = length(s)
-    iseven(n) ? 0.5 * (s[n ÷ 2] + s[n ÷ 2 + 1]) : s[(n + 1) ÷ 2]
-end
-
-# Reference MAD-std
-ref_mad_std(v) = begin
-    m = ref_median(v)
-    dev = abs.(v .- m)
-    ref_median(dev) * 1.4826022185056018
-end
-
-struct ExternalWorkspace{T}
-    scratch1::Vector{T}
-    scratch2::Vector{T}
-    scratch3::Vector{T}
-    scratch4::Vector{T}
-end
-
-SigmaClip.workspace_buffer(ws::ExternalWorkspace) = ws.scratch2
-SigmaClip.workspace_auxbuffer(ws::ExternalWorkspace) = ws.scratch4
-
-struct MissingWorkspaceProtocol end
-
-struct WrongTypeWorkspace
-    buf::Vector{Float32}
-    aux::Vector{Float32}
-end
-
-SigmaClip.workspace_buffer(ws::WrongTypeWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::WrongTypeWorkspace) = ws.aux
-
-struct ShortAuxWorkspace{T}
+struct PublicAPIWorkspace{T, A}
     buf::Vector{T}
-    aux::Vector{T}
+    aux::Vector{A}
 end
-
-SigmaClip.workspace_buffer(ws::ShortAuxWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::ShortAuxWorkspace) = ws.aux
 
 struct NoAuxWorkspace{T}
     buf::Vector{T}
 end
 
+PublicAPIWorkspace(::Type{T}, n::Integer) where {T} =
+    PublicAPIWorkspace(Vector{T}(undef, n), Vector{float(T)}(undef, n))
+PublicAPIWorkspace(x::AbstractArray{T}) where {T} =
+    PublicAPIWorkspace(T, length(x))
+
+SigmaClip.workspace_buffer(ws::PublicAPIWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::PublicAPIWorkspace) = ws.aux
 SigmaClip.workspace_buffer(ws::NoAuxWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::NoAuxWorkspace) = nothing
+SigmaClip.workspace_auxbuffer(::NoAuxWorkspace) = nothing
 
-struct ReinterpretedWorkspace{B, A}
-    buf::B
-    aux::A
-end
+struct WorkspaceCenter end
+struct WorkspaceSpread end
 
-SigmaClip.workspace_buffer(ws::ReinterpretedWorkspace) = ws.buf
-SigmaClip.workspace_auxbuffer(ws::ReinterpretedWorkspace) = ws.aux
+SigmaClip.statistic(::WorkspaceCenter, ws::PublicAPIWorkspace, n::Int) =
+    mean(@view SigmaClip.workspace_buffer(ws)[1:n])
 
-struct ZeroBasedVector{T} <: AbstractVector{T}
-    data::Vector{T}
-end
-
-Base.size(v::ZeroBasedVector) = size(v.data)
-Base.axes(v::ZeroBasedVector) = (0:(length(v.data) - 1),)
-Base.IndexStyle(::Type{<:ZeroBasedVector}) = IndexLinear()
-Base.getindex(v::ZeroBasedVector, i::Int) = v.data[i + 1]
-Base.setindex!(v::ZeroBasedVector, x, i::Int) = (v.data[i + 1] = x)
-
-struct WorkspaceConstantCenter end
-struct WorkspaceConstantSpread end
-struct WorkspaceMeanAbsDeviation end
-
-function SigmaClip.statistic(
-        ::WorkspaceConstantCenter,
-        ws::ExternalWorkspace,
-        n::Int,
-    )
-    return ws.scratch1[1]
-end
-
-function SigmaClip.statistic(
-        ::WorkspaceConstantSpread,
-        ws::ExternalWorkspace,
-        n::Int,
-    )
-    return ws.scratch3[1]
-end
-
-function SigmaClip.statistic(
-        ::WorkspaceMeanAbsDeviation,
-        ws::ExternalWorkspace,
-        n::Int,
-    )
+SigmaClip.statistic(::WorkspaceSpread, ws::PublicAPIWorkspace, n::Int) = begin
     data = @view SigmaClip.workspace_buffer(ws)[1:n]
     aux = @view SigmaClip.workspace_auxbuffer(ws)[1:n]
-    center = sum(data) / length(data)
-
+    c = mean(data)
     @inbounds for i in eachindex(data)
-        aux[i] = abs(data[i] - center)
+        aux[i] = abs(data[i] - c)
     end
-
-    return sum(aux) / length(aux)
+    return mean(aux)
 end
 
-struct TestQuantity{T <: AbstractFloat} <: Number
-    value::T
+plain_center(v) = mean(v)
+plain_spread(v) = maximum(abs, v .- mean(v)) / 2
+
+function same_nan_pattern(a, b)
+    axes(a) == axes(b) || return false
+    for i in eachindex(a, b)
+        if isnan(a[i]) || isnan(b[i])
+            isnan(a[i]) && isnan(b[i]) || return false
+        elseif a[i] != b[i]
+            return false
+        end
+    end
+    return true
 end
 
-Base.convert(::Type{TestQuantity{T}}, x::TestQuantity) where {T} =
-    TestQuantity{T}(convert(T, x.value))
-Base.convert(::Type{TestQuantity{T}}, x::Real) where {T} =
-    TestQuantity{T}(convert(T, x))
-Base.promote_rule(::Type{TestQuantity{T}}, ::Type{S}) where {T, S <: Real} =
-    TestQuantity{promote_type(T, S)}
-Base.zero(::Type{TestQuantity{T}}) where {T} = TestQuantity{T}(zero(T))
-Base.zero(x::TestQuantity) = zero(typeof(x))
-Base.oneunit(::Type{TestQuantity{T}}) where {T} = TestQuantity{T}(oneunit(T))
-Base.:+(a::TestQuantity, b::TestQuantity) =
-    TestQuantity(a.value + b.value)
-Base.:-(a::TestQuantity, b::TestQuantity) =
-    TestQuantity(a.value - b.value)
-Base.:-(a::TestQuantity) = TestQuantity(-a.value)
-Base.:*(a::TestQuantity, b::Real) = TestQuantity(a.value * b)
-Base.:*(a::Real, b::TestQuantity) = TestQuantity(a * b.value)
-Base.:/(a::TestQuantity, b::Real) = TestQuantity(a.value / b)
-Base.abs(a::TestQuantity) = TestQuantity(abs(a.value))
-Base.isless(a::TestQuantity, b::TestQuantity) = isless(a.value, b.value)
-Base.:(==)(a::TestQuantity, b::TestQuantity) = a.value == b.value
-Base.isfinite(a::TestQuantity) = isfinite(a.value)
-Base.isnan(a::TestQuantity) = isnan(a.value)
-value(a::TestQuantity) = a.value
+@testset "Workspace Traits" begin
+    @testset "alloca aux solo per statistiche che lo richiedono" begin
+        data = [1, 2, 3, 100]
 
-# @testset "SigmaClip.jl" begin
+        ws_mad = SigmaClip.prepare_ws(data, mad_std!, nothing)
+        @test SigmaClip.workspace_buffer(ws_mad) isa Vector{Int}
+        @test length(SigmaClip.workspace_buffer(ws_mad)) == length(data)
+        @test SigmaClip.workspace_auxbuffer(ws_mad) isa Vector{Float64}
+        @test length(SigmaClip.workspace_auxbuffer(ws_mad)) == length(data)
 
-# ─────────────────────────────────────────────────────────────────────────
-@testset "fast_median!" begin
+        ws_std = SigmaClip.prepare_ws(data, std, nothing)
+        @test SigmaClip.workspace_buffer(ws_std) isa Vector{Int}
+        @test SigmaClip.workspace_auxbuffer(ws_std) === nothing
 
-    @testset "correctness vs sort-based median" begin
-        for n in [1, 2, 3, 4, 5, 10, 11, 99, 100, 1001]
-            v = randn(n)
-            @test SigmaClip.fast_median!(copy(v)) ≈ ref_median(v)
-        end
+        ws_custom = SigmaClip.prepare_ws(data, plain_spread, nothing)
+        @test SigmaClip.workspace_buffer(ws_custom) isa Vector{Int}
+        @test SigmaClip.workspace_auxbuffer(ws_custom) === nothing
     end
 
-    @testset "specific small cases" begin
-        @test SigmaClip.fast_median!([1.0]) == 1.0
-        @test SigmaClip.fast_median!([1.0, 2.0]) == 1.5
-        @test SigmaClip.fast_median!([3.0, 1.0, 2.0]) == 2.0
-        @test SigmaClip.fast_median!([4.0, 1.0, 3.0, 2.0]) == 2.5
+    @testset "workspace custom senza aux" begin
+        data = Float64[1, 2, 3, 100]
+        ws = NoAuxWorkspace(Vector{Float64}(undef, length(data)))
+
+        @test SigmaClip.prepare_ws(data, std, ws) === ws
+        @test_throws ArgumentError SigmaClip.prepare_ws(data, mad_std!, ws)
+    end
+end
+
+@testset "sigma_clip_bounds" begin
+    @testset "diversi tipi di input" begin
+        @test SigmaClip.sigma_clip_bounds(Float64[0, 0, 0, 10]) == (0.0, 0.0)
+
+        lb32, ub32 = SigmaClip.sigma_clip_bounds(Float32[1, 1, 1, 9])
+        @test lb32 === 1.0f0
+        @test ub32 === 1.0f0
+
+        matrix = reshape(Float64[1, 1, 1, 1, 99, -99], 2, 3)
+        lb, ub = SigmaClip.sigma_clip_bounds(matrix)
+        @test lb == 1.0
+        @test ub == 1.0
     end
 
-    @testset "already sorted / reverse sorted" begin
-        asc = collect(1.0:100.0)
-        desc = reverse(asc)
-        @test SigmaClip.fast_median!(asc) ≈ ref_median(1.0:100.0)
-        @test SigmaClip.fast_median!(desc) ≈ ref_median(1.0:100.0)
-    end
+    @testset "outliers chiari" begin
+        low, high = SigmaClip.sigma_clip_bounds(vcat(fill(2.0, 10), [100.0, -100.0]))
+        @test low == 2.0
+        @test high == 2.0
 
-    @testset "all identical values" begin
-        v = fill(3.14, 50)
-        @test SigmaClip.fast_median!(v) == 3.14
-    end
-
-    @testset "two identical values" begin
-        @test SigmaClip.fast_median!([5.0, 5.0]) == 5.0
-    end
-
-    @testset "preserves all values (only reorders)" begin
-        v = randn(200)
-        sv = sort(v)
-        SigmaClip.fast_median!(v)
-        @test sort(v) == sv
-    end
-
-    @testset "empty array returns zero" begin
-        @test SigmaClip.fast_median!(Float64[]) == 0.0
-        @test SigmaClip.fast_median!(Float32[]) == 0.0f0
-    end
-
-    @testset "zero allocations" begin
-        v = randn(500)
-        @test (@allocated SigmaClip.fast_median!(v)) == 0
-    end
-
-end # fast_median!
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "SigmaClipWorkspace" begin
-
-    @testset "constructor (type, n)" begin
-        ws = SigmaClipWorkspace(Float64, 100)
-        @test ws isa SigmaClipWorkspace{Float64}
-        @test length(ws.buf) == 100
-        @test length(ws.aux) == 100
-    end
-
-    @testset "constructor from Float array" begin
-        v = randn(Float32, 50)
-        ws = SigmaClipWorkspace(v)
-        @test ws isa SigmaClipWorkspace{Float32}
-        @test length(ws.buf) == 50
-    end
-
-    @testset "constructor from quantity-like array preserves units" begin
-        v = TestQuantity{Float64}.([1.0, 2.0, 3.0])
-        ws = SigmaClipWorkspace(v)
-        @test ws isa SigmaClipWorkspace{TestQuantity{Float64}}
-        @test length(ws.buf) == 3
-    end
-
-    @testset "constructor from Integer array promotes to Float64" begin
-        v = rand(Int, 80)
-        ws = SigmaClipWorkspace(v)
-        @test ws isa SigmaClipWorkspace{Float64}
-        @test length(ws.buf) == 80
-    end
-
-    @testset "workspace too short raises ArgumentError" begin
-        ws = SigmaClipWorkspace(Float64, 10)
-        v = randn(20)
-        @test_throws ArgumentError sigma_clip!(v; workspace = ws)
-    end
-
-    @testset "workspace exact length is accepted" begin
-        v = randn(50)
-        ws = SigmaClipWorkspace(Float64, 50)
-        @test_nowarn sigma_clip!(copy(v); workspace = ws)
-    end
-
-    @testset "workspace larger than array is accepted" begin
-        v = randn(30)
-        ws = SigmaClipWorkspace(Float64, 100)
-        @test_nowarn sigma_clip!(copy(v); workspace = ws)
-    end
-
-    @testset "zero allocations in hot loop with workspace" begin
-        ws = SigmaClipWorkspace(Float64, 1000)
-        row = randn(1000)
-        # warm up
-        sigma_clip!(copy(row); workspace = ws)
-        allocs = @allocated sigma_clip!(copy(row); workspace = ws)
-        # copy() itself allocates; test that passing ws causes no extra allocs
-        # inside _sigma_clip_bounds by re-using a pre-copied buffer
-        buf = copy(row)
-        sigma_clip!(buf; workspace = ws)          # warm up
-        allocs = @allocated sigma_clip!(buf; workspace = ws)
-        @test allocs == 0
-    end
-
-    @testset "public entrypoints are allocation-free with workspace" begin
-        function allocs_public_entrypoints()
-            x = randn(1000)
-            ws = SigmaClipWorkspace(Float64, 1000)
-            buf = copy(x)
-            target = falses(length(x))
-
-            # Warm up public call paths before measuring.
-            SigmaClip.sigma_clip_bounds(x; workspace = ws)
-            sigma_clip!(buf; workspace = ws)
-            sigma_clip_mask!(x, target; workspace = ws)
-
-            bounds = @allocated SigmaClip.sigma_clip_bounds(x; workspace = ws)
-            clip = @allocated sigma_clip!(buf; workspace = ws)
-            mask_bang = @allocated sigma_clip_mask!(x, target; workspace = ws)
-
-            (; bounds, clip, mask_bang)
-        end
-
-        allocs = allocs_public_entrypoints()
-        @test all(values(allocs) .== 0)
-    end
-
-    @testset "internal helpers are allocation-free with workspace" begin
-        function allocs_internal_helpers()
-            x = randn(1000)
-            exclude = falses(1000)
-            exclude[1] = true
-            ws = SigmaClipWorkspace(Float64, 1000)
-            ws.buf .= x
-
-            # Warm up all internal call paths before measuring.
-            SigmaClip._ensure_workspace(Float64, length(x), ws)
-            SigmaClip._compute_stats(fast_median!, mad_std!, length(x), ws)
-            SigmaClip._compute_stats(fast_median!, std, length(x), ws)
-            SigmaClip._compute_stats(mean, mad_std!, length(x), ws)
-            SigmaClip._compute_stats(mean, std, length(x), ws)
-            SigmaClip._sigma_clip_bounds_impl(
-                x, nothing, ws,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            SigmaClip._sigma_clip_bounds_impl(
-                x, exclude, ws,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            SigmaClip._sigma_clip_bounds_checked(
-                x, ws, nothing,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            SigmaClip._sigma_clip_bounds_checked(
-                x, ws, exclude,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-
-            x_int = round.(Int, 10 .* x)
-            ws_int = SigmaClipWorkspace(Float64, length(x_int))
-            SigmaClip._sigma_clip_bounds_checked(
-                x_int, ws_int, nothing,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-
-            ensure = @allocated SigmaClip._ensure_workspace(Float64, length(x), ws)
-            stats_mad = @allocated SigmaClip._compute_stats(fast_median!, mad_std!, length(x), ws)
-            stats_std = @allocated SigmaClip._compute_stats(fast_median!, std, length(x), ws)
-            stats_mean_mad = @allocated SigmaClip._compute_stats(mean, mad_std!, length(x), ws)
-            stats_generic = @allocated SigmaClip._compute_stats(mean, std, length(x), ws)
-            bounds_impl = @allocated SigmaClip._sigma_clip_bounds_impl(
-                x, nothing, ws,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            bounds_impl_exclude = @allocated SigmaClip._sigma_clip_bounds_impl(
-                x, exclude, ws,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            bounds_checked = @allocated SigmaClip._sigma_clip_bounds_checked(
-                x, ws, nothing,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            bounds_checked_exclude = @allocated SigmaClip._sigma_clip_bounds_checked(
-                x, ws, exclude,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-            bounds_checked_int = @allocated SigmaClip._sigma_clip_bounds_checked(
-                x_int, ws_int, nothing,
-                3.0, 3.0, fast_median!, mad_std!, 5
-            )
-
-            (;
-                ensure, stats_mad, stats_std, stats_mean_mad, stats_generic,
-                bounds_impl, bounds_impl_exclude,
-                bounds_checked, bounds_checked_exclude, bounds_checked_int,
-            )
-        end
-
-        allocs = allocs_internal_helpers()
-        @test all(values(allocs) .== 0)
-    end
-
-    @testset "custom workspace protocol is supported" begin
-        data = vcat(zeros(Float64, 98), [500.0, -500.0])
-        builtin = sigma_clip(data; center = fast_median!, spread = mad_std!)
-
-        ws = ExternalWorkspace(
-            zeros(Float64, 100), zeros(Float64, 100),
-            zeros(Float64, 100), zeros(Float64, 100)
+        low, high = SigmaClip.sigma_clip_bounds(
+            Float64[-100, 0, 0, 0, 0, 50];
+            exclude = Bool[1, 0, 0, 0, 0, 1],
         )
-        custom = sigma_clip(data; workspace = ws, center = fast_median!, spread = mad_std!)
-
-        for i in eachindex(builtin)
-            if isnan(builtin[i])
-                @test isnan(custom[i])
-            else
-                @test custom[i] == builtin[i]
-            end
-        end
+        @test low == 0.0
+        @test high == 0.0
     end
 
-    @testset "custom workspace is allocation-free in public entrypoints" begin
-        function allocs_custom_workspace()
-            x = randn(1000)
-            buf = copy(x)
-            target = falses(length(x))
-            ws = ExternalWorkspace(
-                zeros(Float64, 1000), zeros(Float64, 1000),
-                zeros(Float64, 1000), zeros(Float64, 1000)
-            )
-
-            SigmaClip.sigma_clip_bounds(x; workspace = ws)
-            sigma_clip!(buf; workspace = ws)
-            sigma_clip_mask!(x, target; workspace = ws)
-
-            bounds = @allocated SigmaClip.sigma_clip_bounds(x; workspace = ws)
-            clip = @allocated sigma_clip!(buf; workspace = ws)
-            mask_bang = @allocated sigma_clip_mask!(x, target; workspace = ws)
-
-            (; bounds, clip, mask_bang)
-        end
-
-        allocs = allocs_custom_workspace()
-        @test all(values(allocs) .== 0)
+    @testset "NaN e Inf" begin
+        low, high = SigmaClip.sigma_clip_bounds([0.0, 0.0, 0.0, NaN, Inf, -Inf, 50.0])
+        @test low == 0.0
+        @test high == 0.0
     end
 
-    @testset "workspace protocol errors are validated" begin
-        data = randn(20)
-        missing = MissingWorkspaceProtocol()
-        wrong_type = WrongTypeWorkspace(zeros(Float32, 20), zeros(Float32, 20))
-        short_aux = ShortAuxWorkspace(zeros(Float64, 20), zeros(Float64, 10))
-        # zero_based = ReinterpretedWorkspace(
-        #     ZeroBasedVector(zeros(Float64, 20)),
-        #     ZeroBasedVector(zeros(Float64, 20)))
-
-        @test_throws ArgumentError sigma_clip!(data; workspace = missing)
-        @test_throws ArgumentError sigma_clip!(data; workspace = wrong_type)
-        @test_throws ArgumentError sigma_clip!(data; workspace = short_aux)
-        # @test_throws ArgumentError sigma_clip!(data; workspace=zero_based)
-    end
-
-    @testset "workspace auxiliary buffer is optional" begin
-        x = vcat(zeros(Float64, 18), [100.0, -100.0])
-        ws = NoAuxWorkspace(zeros(Float64, length(x)))
-        target = falses(length(x))
-
-        @test_nowarn SigmaClip.sigma_clip_bounds(
-            x;
-            workspace = ws, center = fast_median!, spread = std
+    @testset "statistiche custom" begin
+        data = [-4.0, -1.0, 0.0, 1.0, 4.0]
+        low, high = SigmaClip.sigma_clip_bounds(
+            data;
+            center = plain_center,
+            spread = plain_spread,
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
         )
-        @test_nowarn sigma_clip!(
-            copy(x);
-            workspace = ws, center = fast_median!, spread = std
-        )
-        @test_nowarn sigma_clip_mask!(
-            x, target;
-            workspace = ws, center = mean, spread = std
+        @test low == -2.0
+        @test high == 2.0
+    end
+
+    @testset "workspace custom" begin
+        data = Float64[0, 0, 0, 0, 100]
+        ws = PublicAPIWorkspace(data)
+
+        @test SigmaClip.sigma_clip_bounds(data; workspace = ws) == (0.0, 0.0)
+        @test ws.buf[1:4] == zeros(4)
+    end
+
+    @testset "workspace-aware statistics" begin
+        data = [-10.0, -1.0, 0.0, 1.0, 10.0]
+        ws = PublicAPIWorkspace(data)
+        low, high = SigmaClip.sigma_clip_bounds(
+            data;
+            workspace = ws,
+            center = WorkspaceCenter(),
+            spread = WorkspaceSpread(),
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
         )
 
-        err = try
-            SigmaClip.sigma_clip_bounds(x; workspace = ws, spread = mad_std!)
-        catch err
-            err
-        end
-        @test err isa ArgumentError
-        @test occursin("workspace aux buffer is required", sprint(showerror, err))
+        @test low == -4.4
+        @test high == 4.4
+    end
+end
 
-        ws.buf .= collect(1.0:length(x))
-        err = try
-            SigmaClip.statistic(mad_std!, ws, length(x))
-        catch err
-            err
-        end
-        @test err isa ArgumentError
-        @test occursin("workspace aux buffer is required", sprint(showerror, err))
+@testset "sigma_clip_stats" begin
+    @test SigmaClip.sigma_clip_stats(Float64[1, 1, 1, 99]) == (1.0, 0.0)
+    @test SigmaClip.sigma_clip_stats(Float64[1, 1, 1, 99], length, sum) == (3, 3.0)
+end
+
+@testset "sigma_clip_mask" begin
+    @testset "diversi tipi di input" begin
+        @test sigma_clip_mask(Float64[1, 1, 1, 9]) == Bool[1, 1, 1, 0]
+        @test sigma_clip_mask(Float32[2, 2, 2, -8]) == Bool[1, 1, 1, 0]
+        @test sigma_clip_mask(reshape(Float64[0, 0, 0, 7], 2, 2)) == Bool[1 1; 1 0]
     end
 
-    @testset "custom spread can run without auxiliary buffer" begin
-        x = vcat(zeros(Float64, 18), [100.0, -100.0])
-        ws = NoAuxWorkspace(zeros(Float64, length(x)))
-        constant_spread = x -> 1.0
+    @testset "outliers chiari" begin
+        data = vcat(fill(0.0, 8), [100.0, -100.0])
+        mask = sigma_clip_mask(data)
 
-        @test_nowarn sigma_clip!(
-            copy(x);
-            workspace = ws, center = fast_median!, spread = constant_spread
+        @test count(mask) == 8
+        @test mask[1:8] == trues(8)
+        @test mask[9:10] == falses(2)
+    end
+
+    @testset "NaN e Inf" begin
+        mask = sigma_clip_mask([1.0, 1.0, 1.0, NaN, Inf, -Inf, 99.0])
+        @test mask == Bool[1, 1, 1, 0, 0, 0, 0]
+    end
+
+    @testset "statistiche custom" begin
+        mask = sigma_clip_mask(
+            [-4.0, -1.0, 0.0, 1.0, 4.0];
+            center = plain_center,
+            spread = plain_spread,
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
         )
+        @test mask == Bool[0, 1, 1, 1, 0]
     end
 
-    @testset "reinterpreted quantity workspace is accepted" begin
-        data = TestQuantity{Float64}.(vcat(zeros(8), [100.0]))
-        raw_buf = Vector{Float64}(undef, length(data))
-        raw_aux = Vector{Float64}(undef, length(data))
-        ws = ReinterpretedWorkspace(
-            reinterpret(TestQuantity{Float64}, raw_buf),
-            reinterpret(TestQuantity{Float64}, raw_aux)
+    @testset "workspace custom" begin
+        data = Float64[0, 0, 0, 0, 100]
+        ws = PublicAPIWorkspace(data)
+        @test sigma_clip_mask(data; workspace = ws) == Bool[1, 1, 1, 1, 0]
+    end
+
+    @testset "workspace-aware statistics" begin
+        data = [-10.0, -1.0, 0.0, 1.0, 10.0]
+        ws = PublicAPIWorkspace(data)
+        mask = sigma_clip_mask(
+            data;
+            workspace = ws,
+            center = WorkspaceCenter(),
+            spread = WorkspaceSpread(),
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
+        )
+        @test mask == Bool[0, 1, 1, 1, 0]
+    end
+end
+
+@testset "sigma_clip_mask!" begin
+    @testset "diversi tipi di input" begin
+        target = trues(4)
+        result = sigma_clip_mask!(Float64[1, 1, 1, 9], target)
+        @test result === target
+        @test target == Bool[1, 1, 1, 0]
+
+        matrix = reshape(Float32[2, 2, 2, -8], 2, 2)
+        target_matrix = falses(size(matrix))
+        sigma_clip_mask!(matrix, target_matrix)
+        @test target_matrix == Bool[1 1; 1 0]
+    end
+
+    @testset "outliers chiari" begin
+        data = vcat(fill(3.0, 6), 30.0)
+        target = falses(length(data))
+        sigma_clip_mask!(data, target)
+
+        @test target == Bool[1, 1, 1, 1, 1, 1, 0]
+    end
+
+    @testset "NaN e Inf" begin
+        data = [5.0, 5.0, 5.0, NaN, Inf, -Inf, -50.0]
+        target = trues(length(data))
+        sigma_clip_mask!(data, target)
+
+        @test target == Bool[1, 1, 1, 0, 0, 0, 0]
+    end
+
+    @testset "non alloca con workspace custom" begin
+        data = vcat(fill(1.0, 64), 99.0)
+        target = falses(length(data))
+        ws = PublicAPIWorkspace(data)
+
+        sigma_clip_mask!(data, target; workspace = ws)
+        allocated = @allocated sigma_clip_mask!(data, target; workspace = ws)
+
+        @test allocated == 0
+        @test target[end] == false
+        @test all(target[1:(end - 1)])
+    end
+
+    @testset "statistiche custom" begin
+        data = [-4.0, -1.0, 0.0, 1.0, 4.0]
+        target = falses(length(data))
+        sigma_clip_mask!(
+            data,
+            target;
+            center = plain_center,
+            spread = plain_spread,
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
         )
 
-        lb, ub = SigmaClip.sigma_clip_bounds(data; workspace = ws)
-
-        @test lb isa TestQuantity{Float64}
-        @test ub isa TestQuantity{Float64}
-        @test value(ub) < 100.0
+        @test target == Bool[0, 1, 1, 1, 0]
     end
 
-    @testset "default statistic uses compacted workspace view" begin
-        ws = SigmaClipWorkspace(Float64, 5)
-        ws.buf .= 1.0:5.0
-        ws.aux .= 11.0:15.0
-
-        @test SigmaClip.statistic(mean, ws, 3) == 2.0
-
-        function touch_first!(v)
-            v[1] = 99.0
-            return sum(v)
-        end
-
-        @test SigmaClip.statistic(touch_first!, ws, 3) == 104.0
-        @test ws.buf[1] == 99.0
-        @test ws.buf[4:5] == [4.0, 5.0]
-        @test ws.aux == collect(11.0:15.0)
-    end
-
-    @testset "workspace-aware statistic protocol is supported" begin
-        ws = ExternalWorkspace(
-            zeros(Float64, 6), zeros(Float64, 6),
-            zeros(Float64, 6), zeros(Float64, 6)
-        )
-        ws.scratch2 .= [1.0, 2.0, 3.0, 100.0, 200.0, 300.0]
-
-        @test SigmaClip.statistic(mean, ws, 3) == 2.0
-        @test SigmaClip.statistic(WorkspaceMeanAbsDeviation(), ws, 3) ≈ 2 / 3
-        @test ws.scratch4[1:3] == [1.0, 0.0, 1.0]
-        @test ws.scratch4[4:6] == [0.0, 0.0, 0.0]
-    end
-
-    @testset "workspace-aware statistics work through public entrypoints" begin
-        data = vcat(zeros(Float64, 8), [100.0, -100.0])
-        ws = ExternalWorkspace(
-            fill(0.0, 10), zeros(Float64, 10),
-            fill(1.0, 10), zeros(Float64, 10)
+    @testset "workspace-aware statistics" begin
+        data = [-10.0, -1.0, 0.0, 1.0, 10.0]
+        target = falses(length(data))
+        ws = PublicAPIWorkspace(data)
+        sigma_clip_mask!(
+            data,
+            target;
+            workspace = ws,
+            center = WorkspaceCenter(),
+            spread = WorkspaceSpread(),
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
         )
 
+        @test target == Bool[0, 1, 1, 1, 0]
+    end
+end
+
+@testset "sigma_clip!" begin
+    @testset "diversi tipi di input" begin
+        data = Float64[1, 1, 1, 9]
+        @test sigma_clip!(data) === data
+        @test same_nan_pattern(data, [1.0, 1.0, 1.0, NaN])
+
+        data32 = Float32[2, 2, 2, -8]
+        sigma_clip!(data32)
+        @test eltype(data32) == Float32
+        @test same_nan_pattern(data32, Float32[2, 2, 2, NaN])
+
+        matrix = reshape(Float64[0, 0, 0, 7], 2, 2)
+        sigma_clip!(matrix)
+        @test same_nan_pattern(matrix, [0.0 0.0; 0.0 NaN])
+    end
+
+    @testset "outliers chiari" begin
+        data = vcat(fill(0.0, 8), [100.0, -100.0])
+        sigma_clip!(data)
+
+        @test all(==(0.0), data[1:8])
+        @test isnan(data[9])
+        @test isnan(data[10])
+    end
+
+    @testset "NaN e Inf" begin
+        data = [1.0, 1.0, 1.0, NaN, Inf, -Inf, 99.0]
+        sigma_clip!(data)
+
+        @test same_nan_pattern(data, [1.0, 1.0, 1.0, NaN, NaN, NaN, NaN])
+    end
+
+    @testset "non alloca con workspace custom" begin
+        data = vcat(fill(1.0, 64), 99.0)
+        ws = PublicAPIWorkspace(data)
+
+        sigma_clip!(data; workspace = ws)
+        data .= vcat(fill(1.0, 64), 99.0)
+        allocated = @allocated sigma_clip!(data; workspace = ws)
+
+        @test allocated == 0
+        @test all(==(1.0), data[1:(end - 1)])
+        @test isnan(data[end])
+    end
+
+    @testset "statistiche custom" begin
+        data = [-4.0, -1.0, 0.0, 1.0, 4.0]
+        sigma_clip!(
+            data;
+            center = plain_center,
+            spread = plain_spread,
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
+        )
+
+        @test same_nan_pattern(data, [NaN, -1.0, 0.0, 1.0, NaN])
+    end
+
+    @testset "workspace-aware statistics" begin
+        data = [-10.0, -1.0, 0.0, 1.0, 10.0]
+        ws = PublicAPIWorkspace(data)
+        sigma_clip!(
+            data;
+            workspace = ws,
+            center = WorkspaceCenter(),
+            spread = WorkspaceSpread(),
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
+        )
+
+        @test same_nan_pattern(data, [NaN, -1.0, 0.0, 1.0, NaN])
+    end
+end
+
+@testset "sigma_clip" begin
+    @testset "diversi tipi di input" begin
+        data = Float64[1, 1, 1, 9]
+        clipped = sigma_clip(data)
+        @test data == [1.0, 1.0, 1.0, 9.0]
+        @test same_nan_pattern(clipped, [1.0, 1.0, 1.0, NaN])
+
+        int_clipped = sigma_clip([2, 2, 2, -8])
+        @test int_clipped isa Vector{Float64}
+        @test same_nan_pattern(int_clipped, [2.0, 2.0, 2.0, NaN])
+
+        matrix = reshape(Float32[0, 0, 0, 7], 2, 2)
+        clipped_matrix = sigma_clip(matrix)
+        @test eltype(clipped_matrix) == Float32
+        @test same_nan_pattern(clipped_matrix, Float32[0 0; 0 NaN])
+    end
+
+    @testset "outliers chiari" begin
+        data = vcat(fill(4.0, 8), [400.0, -400.0])
+        clipped = sigma_clip(data)
+
+        @test all(==(4.0), clipped[1:8])
+        @test isnan(clipped[9])
+        @test isnan(clipped[10])
+        @test data[9] == 400.0
+        @test data[10] == -400.0
+    end
+
+    @testset "NaN e Inf" begin
+        clipped = sigma_clip([3.0, 3.0, 3.0, NaN, Inf, -Inf, 30.0])
+        @test same_nan_pattern(clipped, [3.0, 3.0, 3.0, NaN, NaN, NaN, NaN])
+    end
+
+    @testset "statistiche custom" begin
+        clipped = sigma_clip(
+            [-4.0, -1.0, 0.0, 1.0, 4.0];
+            center = plain_center,
+            spread = plain_spread,
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
+        )
+
+        @test same_nan_pattern(clipped, [NaN, -1.0, 0.0, 1.0, NaN])
+    end
+
+    @testset "workspace custom" begin
+        data = Float64[0, 0, 0, 0, 100]
+        ws = PublicAPIWorkspace(data)
+        clipped = sigma_clip(data; workspace = ws)
+
+        @test same_nan_pattern(clipped, [0.0, 0.0, 0.0, 0.0, NaN])
+        @test data == [0.0, 0.0, 0.0, 0.0, 100.0]
+    end
+
+    @testset "workspace-aware statistics" begin
+        data = [-10.0, -1.0, 0.0, 1.0, 10.0]
+        ws = PublicAPIWorkspace(data)
         clipped = sigma_clip(
             data;
             workspace = ws,
-            center = WorkspaceConstantCenter(),
-            spread = WorkspaceConstantSpread(),
-            sigma_lower = 50.0,
-            sigma_upper = 50.0
+            center = WorkspaceCenter(),
+            spread = WorkspaceSpread(),
+            sigma_lower = 1,
+            sigma_upper = 1,
+            maxiter = 1,
         )
 
-        @test count(isnan, clipped) == 2
-        @test isnan(clipped[9]) && isnan(clipped[10])
-        @test all(==(0.0), clipped[1:8])
+        @test same_nan_pattern(clipped, [NaN, -1.0, 0.0, 1.0, NaN])
     end
-
-    @testset "workspace-aware statistics are allocation-free" begin
-        function allocs_workspace_statistic()
-            ws = ExternalWorkspace(
-                zeros(Float64, 1000), randn(1000),
-                zeros(Float64, 1000), zeros(Float64, 1000)
-            )
-
-            SigmaClip.statistic(WorkspaceMeanAbsDeviation(), ws, 1000)
-            @allocated SigmaClip.statistic(WorkspaceMeanAbsDeviation(), ws, 1000)
-        end
-
-        @test allocs_workspace_statistic() == 0
-    end
-
-end # SigmaClipWorkspace
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "sigma_clip_bounds" begin
-
-    @testset "basic convergence" begin
-        # zeros(98) has MAD=0 once outliers are removed, so bounds converge
-        # to [0, 0]. The meaningful check is that outliers are outside bounds.
-        data = vcat(zeros(98), [100.0, -100.0])
-        lb, ub = SigmaClip.sigma_clip_bounds(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test 100.0 > ub
-        @test -100.0 < lb
-    end
-
-    @testset "returns (0,0) on all-NaN input" begin
-        lb, ub = SigmaClip.sigma_clip_bounds(fill(NaN, 10))
-        @test lb == 0.0 && ub == 0.0
-    end
-
-    @testset "returns (0,0) on all-Inf input" begin
-        lb, ub = SigmaClip.sigma_clip_bounds(fill(Inf, 10))
-        @test lb == 0.0 && ub == 0.0
-    end
-
-    @testset "returns (0,0) on empty array" begin
-        lb, ub = SigmaClip.sigma_clip_bounds(Float64[])
-        @test lb == 0.0 && ub == 0.0
-    end
-
-    @testset "single element" begin
-        lb, ub = SigmaClip.sigma_clip_bounds([5.0])
-        @test isfinite(lb) && isfinite(ub)
-    end
-
-    @testset "maxiter=1 stops after one iteration" begin
-        # With very tight sigma, multiple iterations would clip more
-        data = Float64[1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 10, 50]
-        lb1, ub1 = SigmaClip.sigma_clip_bounds(
-            data; maxiter = 1,
-            center = fast_median!, spread = mad_std!
-        )
-        lb5, ub5 = SigmaClip.sigma_clip_bounds(
-            data; maxiter = 5,
-            center = fast_median!, spread = mad_std!
-        )
-        # 5 iterations should converge to tighter or equal bounds
-        @test ub5 <= ub1 + 1.0e-10
-    end
-
-    @testset "maxiter=-1 runs until convergence" begin
-        data = vcat(ones(50), [1000.0])
-        lb, ub = SigmaClip.sigma_clip_bounds(
-            data; maxiter = -1,
-            center = fast_median!, spread = mad_std!
-        )
-        @test ub < 100.0
-    end
-
-    @testset "invalid maxiter values raise ArgumentError" begin
-        data = randn(20)
-
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; maxiter = 0)
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; maxiter = -2)
-        @test_throws ArgumentError SigmaClip.sigma_clip_mask(data; maxiter = 0)
-        @test_throws ArgumentError SigmaClip.sigma_clip_mask(data; maxiter = -2)
-    end
-
-    @testset "mask excludes values from bound computation" begin
-        data = [0.0, 0.0, 0.0, 0.0, 50.0]
-        exclude = falses(5)
-        exclude[end] = true   # mark 50.0 as already-bad
-
-        # With exclude: 50.0 excluded from stats, bounds should be tight
-        lb_m, ub_m = SigmaClip.sigma_clip_bounds(
-            data; exclude = exclude,
-            center = fast_median!, spread = mad_std!
-        )
-        lb_u, ub_u = SigmaClip.sigma_clip_bounds(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test ub_m <= ub_u
-    end
-
-    @testset "invalid sigma values raise ArgumentError" begin
-        data = randn(20)
-
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_lower = -1)
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_upper = -1)
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_lower = NaN)
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; sigma_upper = Inf)
-    end
-
-    @testset "exclude axes must match input axes" begin
-        data = randn(4)
-
-        @test_throws ArgumentError SigmaClip.sigma_clip_bounds(data; exclude = falses(2, 2))
-        @test_throws ArgumentError sigma_clip!(copy(data); exclude = falses(3))
-    end
-
-    @testset "asymmetric sigma" begin
-        # Uses spread=std: zeros-dominated data has MAD=0, which would
-        # collapse bounds to [0,0] regardless of sigma_lower/sigma_upper.
-        # std is non-zero here and correctly exercises asymmetric thresholds.
-        data = vcat(zeros(50), [10.0], [-10.0])
-        lb, ub = SigmaClip.sigma_clip_bounds(
-            data;
-            sigma_lower = 100.0, sigma_upper = 2.0,
-            center = fast_median!, spread = std
-        )
-        # tight upper threshold: ub is well below 10.0
-        @test ub < 10.0
-        # very permissive lower threshold: lb is well below -10.0
-        @test lb < -10.0
-    end
-
-    @testset "quantity-like reinterpreted input preserves bounds units" begin
-        raw = vcat(zeros(8), [100.0])
-        data = reinterpret(TestQuantity{Float64}, raw)
-
-        lb, ub = SigmaClip.sigma_clip_bounds(data)
-
-        @test lb isa TestQuantity{Float64}
-        @test ub isa TestQuantity{Float64}
-        @test value(lb) == 0.0
-        @test value(ub) == 0.0
-    end
-
-end # sigma_clip_bounds
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "sigma_clip! (in-place)" begin
-
-    @testset "high outlier is clipped" begin
-        data = vcat(zeros(Float64, 99), [1000.0])
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[end])
-        @test all(==(0.0), data[1:99])
-    end
-
-    @testset "low outlier is clipped" begin
-        data = vcat([-1000.0], zeros(Float64, 99))
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[1])
-        @test all(==(0.0), data[2:end])
-    end
-
-    @testset "both extremes clipped independently" begin
-        data = vcat(zeros(Float64, 98), [500.0, -500.0])
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[99])
-        @test isnan(data[100])
-        @test count(isnan, data) == 2
-    end
-
-    @testset "NaN input stays NaN" begin
-        data = [1.0, 2.0, NaN, 3.0]
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[3])
-    end
-
-    @testset "Inf is always clipped" begin
-        data = vcat(ones(Float64, 10), [Inf])
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[end])
-    end
-
-    @testset "-Inf is always clipped" begin
-        data = vcat(ones(Float64, 10), [-Inf])
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[end])
-    end
-
-    @testset "outlier at first element" begin
-        data = vcat([1000.0], zeros(Float64, 50))
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[1])
-    end
-
-    @testset "outlier at last element" begin
-        data = vcat(zeros(Float64, 50), [1000.0])
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[end])
-    end
-
-    @testset "constant array — nothing clipped" begin
-        data = fill(3.0, 50)
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test all(==(3.0), data)
-    end
-
-    @testset "very large sigma — nothing clipped" begin
-        data = randn(100)
-        original = copy(data)
-        sigma_clip!(
-            data; sigma_lower = 1000.0, sigma_upper = 1000.0,
-            center = fast_median!, spread = mad_std!
-        )
-        @test all(!isnan, data)
-    end
-
-    @testset "returns the modified array" begin
-        data = randn(20)
-        result = sigma_clip!(data)
-        @test result === data
-    end
-
-    @testset "exclude kwarg shields value from bound computation" begin
-        data = Float64[0, 0, 0, 0, 50]
-        exclude = falses(5)
-        exclude[5] = true   # treat index 5 as already bad
-        sigma_clip!(
-            data; exclude = exclude,
-            center = fast_median!, spread = mad_std!
-        )
-        # 50.0 was excluded from stats: bounds are tight around 0
-        # so 50.0 should also be clipped in the output
-        @test isnan(data[5])
-        @test all(==(0.0), data[1:4])
-    end
-
-    @testset "asymmetric sigma_upper clips high only" begin
-        # spread=std: zeros-based data has MAD=0, which defeats asymmetry.
-        # std correctly produces non-zero dispersion here.
-        data = vcat(zeros(Float64, 50), [100.0], [-100.0])
-        sigma_clip!(
-            data; sigma_lower = 1000.0, sigma_upper = 2.0,
-            center = fast_median!, spread = std
-        )
-        @test isnan(data[51])      # high outlier clipped
-        @test !isnan(data[52])     # low outlier kept
-    end
-
-    @testset "asymmetric sigma_lower clips low only" begin
-        data = vcat(zeros(Float64, 50), [100.0], [-100.0])
-        sigma_clip!(
-            data; sigma_lower = 2.0, sigma_upper = 1000.0,
-            center = fast_median!, spread = std
-        )
-        @test !isnan(data[51])     # high outlier kept
-        @test isnan(data[52])      # low outlier clipped
-    end
-
-    @testset "integer input raises helpful ArgumentError" begin
-        err = try
-            sigma_clip!([1, 2, 3, 100])
-            nothing
-        catch err
-            err
-        end
-
-        @test err isa ArgumentError
-        @test occursin("use sigma_clip(x)", sprint(showerror, err))
-    end
-
-    @testset "Float32 input preserved as Float32" begin
-        data = Float32[1, 1, 1, 1, 100]
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test eltype(data) == Float32
-        @test isnan(data[end])
-    end
-
-    @testset "quantity-like input is clipped with quantity NaN" begin
-        data = TestQuantity{Float64}.(vcat(zeros(8), [100.0]))
-        sigma_clip!(data)
-
-        @test isnan(data[end])
-        @test all(==(TestQuantity{Float64}(0.0)), data[1:(end - 1)])
-    end
-
-end # sigma_clip!
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "sigma_clip (out-of-place)" begin
-
-    @testset "original array is never modified" begin
-        original = vcat(zeros(Float64, 99), [1000.0])
-        backup = copy(original)
-        sigma_clip(original; center = fast_median!, spread = mad_std!)
-        @test original == backup
-    end
-
-    @testset "outlier replaced in returned copy" begin
-        data = vcat(zeros(Float64, 99), [1000.0])
-        cleaned = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        @test isnan(cleaned[end])
-    end
-
-    @testset "integer input promoted to Float64" begin
-        data = [1, 1, 1, 1, 100]
-        result = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        @test result isa Vector{Float64}
-        @test isnan(result[end])
-    end
-
-    @testset "result matches sigma_clip!" begin
-        data = randn(200)
-        data[42] = 999.0
-        r1 = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        r2 = sigma_clip!(copy(data); center = fast_median!, spread = mad_std!)
-        for i in eachindex(r1)
-            if isnan(r1[i])
-                @test isnan(r2[i])
-            else
-                @test r1[i] == r2[i]
-            end
-        end
-    end
-
-end # sigma_clip
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "sigma_clip_mask / sigma_clip_mask!" begin
-
-    @testset "known outliers are marked false" begin
-        data = vcat(zeros(Float64, 98), [500.0, -500.0])
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test mask[99] == false
-        @test mask[100] == false
-    end
-
-    @testset "clean elements are marked true" begin
-        data = randn(200)
-        data[1] = 1.0e6
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test mask[1] == false
-        # the vast majority of normally distributed values should survive
-        @test count(mask) > 190
-    end
-
-    @testset "NaN input element is marked false" begin
-        data = [1.0, 2.0, NaN, 3.0]
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test mask[3] == false
-    end
-
-    @testset "Inf input element is marked false" begin
-        data = vcat(ones(Float64, 20), [Inf])
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test mask[end] == false
-    end
-
-    @testset "result size matches input" begin
-        data = randn(77)
-        @test size(sigma_clip_mask(data)) == size(data)
-    end
-
-    @testset "sigma_clip_mask! writes into pre-allocated target" begin
-        data = vcat(zeros(Float64, 50), [999.0])
-        target = falses(51)
-        sigma_clip_mask!(
-            data, target;
-            center = fast_median!, spread = mad_std!
-        )
-        @test target[end] == false
-        @test count(target) == 50
-    end
-
-    @testset "sigma_clip_mask! returns target" begin
-        data = randn(20)
-        target = falses(20)
-        result = sigma_clip_mask!(data, target)
-        @test result === target
-    end
-
-    @testset "sigma_clip_mask! target axes must match input axes" begin
-        data = randn(4)
-
-        @test_throws ArgumentError sigma_clip_mask!(data, falses(2, 2))
-        @test_throws ArgumentError sigma_clip_mask!(data, falses(3))
-    end
-
-    @testset "exclude is stats-only, not a forced bad mask" begin
-        data = zeros(5)
-        exclude = falses(5)
-        exclude[3] = true
-
-        mask = sigma_clip_mask(data; exclude = exclude)
-
-        @test mask[3] == true
-        @test all(mask)
-    end
-
-    @testset "excluded values are still classified against final bounds" begin
-        data = [0.0, 0.0, 0.0, 0.0, 50.0]
-        exclude = falses(5)
-        exclude[end] = true
-
-        mask = sigma_clip_mask(data; exclude = exclude)
-
-        @test mask[end] == false
-        @test count(mask) == 4
-    end
-
-    @testset "quantity-like reinterpreted input mask" begin
-        raw = vcat(zeros(8), [100.0])
-        data = reinterpret(TestQuantity{Float64}, raw)
-        mask = sigma_clip_mask(data)
-
-        @test mask[end] == false
-        @test count(mask) == 8
-    end
-
-    @testset "consistency: mask NaN iff sigma_clip! returns NaN" begin
-        data = randn(300)
-        data[77] = 1.0e5
-        data[200] = NaN
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        clipped = sigma_clip(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        for i in eachindex(data)
-            @test mask[i] == !isnan(clipped[i])
-        end
-    end
-
-end # sigma_clip_mask
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "reducer dispatch paths" begin
-
-    BASE = vcat(zeros(Float64, 98), [500.0, -500.0])
-
-    @testset "(fast_median!, mad_std!) — specialised, shared median" begin
-        data = copy(BASE)
-        sigma_clip!(data; center = fast_median!, spread = mad_std!)
-        @test isnan(data[99]) && isnan(data[100])
-        @test count(isnan, data) == 2
-    end
-
-    @testset "(fast_median!, std) — specialised centre, generic std" begin
-        data = copy(BASE)
-        sigma_clip!(data; center = fast_median!, spread = std)
-        @test isnan(data[99]) && isnan(data[100])
-    end
-
-    @testset "(fast_median!, std) — function as center, generic fallback" begin
-        # Passing the mutating function, not the sentinel — still works
-        data = copy(BASE)
-        sigma_clip!(data; center = fast_median!, spread = std)
-        @test isnan(data[99]) && isnan(data[100])
-    end
-
-    @testset "(mean, std) — fully generic fallback" begin
-        using_mean(v) = sum(v) / length(v)
-        data = copy(BASE)
-        sigma_clip!(data; center = using_mean, spread = std)
-        # mean is less robust but should still catch a 5-sigma outlier
-        @test isnan(data[99]) || isnan(data[100])
-    end
-
-    @testset "custom cent and std with known bounds" begin
-        # Fixed centre at 0, fixed spread of 1 → bounds are [-50, 50]
-        data = copy(BASE)
-        sigma_clip!(
-            data;
-            center = _ -> 0.0,
-            spread = _ -> 1.0,
-            sigma_lower = 50.0,
-            sigma_upper = 50.0
-        )
-        @test isnan(data[99]) && isnan(data[100])
-        @test all(==(0.0), data[1:98])
-    end
-
-    @testset "mad_std! result matches manual calculation" begin
-        v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-        ws = SigmaClipWorkspace(Float64, length(v))
-        ws.buf .= v
-        _, s = SigmaClip._compute_stats(
-            SigmaClip.fast_median!, SigmaClip.mad_std!,
-            length(v), ws
-        )
-        @test s ≈ ref_mad_std(v)
-    end
-
-    @testset "mad_std! statistic uses workspace auxiliary buffer" begin
-        function mad_stat_result_and_allocs()
-            v = collect(1.0:1000.0)
-            ws = SigmaClipWorkspace(Float64, length(v))
-            ws.buf .= v
-
-            result = SigmaClip.statistic(mad_std!, ws, length(v))
-            allocs = @allocated SigmaClip.statistic(mad_std!, ws, length(v))
-
-            (; result, allocs)
-        end
-
-        checked = mad_stat_result_and_allocs()
-        @test checked.result ≈ ref_mad_std(collect(1.0:1000.0))
-        @test checked.allocs == 0
-    end
-
-end # reducer dispatch
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "outlier detection correctness" begin
-
-    # Fixed seed for reproducibility
-    Random.seed!(42)
-
-    @testset "single obvious outlier always detected" begin
-        for _ in 1:20
-            data = randn(500)
-            idx = rand(1:500)
-            data[idx] = 1000.0
-            mask = sigma_clip_mask(
-                data;
-                center = fast_median!, spread = mad_std!
-            )
-            @test mask[idx] == false
-        end
-    end
-
-    @testset "false positive rate on clean normal data is low" begin
-        data = randn(10_000)
-        mask = sigma_clip_mask(
-            data; sigma_lower = 3.0, sigma_upper = 3.0,
-            center = fast_median!, spread = mad_std!
-        )
-        # For σ=3 and normal data, theoretical false positive rate ≈ 0.27%
-        # We allow up to 1% to be safe
-        @test 1 - count(mask) / length(data) < 0.01
-    end
-
-    @testset "multiple outliers at different magnitudes" begin
-        data = vcat(zeros(Float64, 97), [10.0, 100.0, 1000.0])
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test !mask[98] && !mask[99] && !mask[100]
-    end
-
-    @testset "outliers at both ends of distribution" begin
-        data = vcat([-200.0], zeros(Float64, 98), [200.0])
-        mask = sigma_clip_mask(
-            data;
-            center = fast_median!, spread = mad_std!
-        )
-        @test !mask[1] && !mask[end]
-    end
-
-    @testset "convergence: iterative clipping catches cascading outliers" begin
-        # 50 is a mild outlier; 1000 inflates std so 50 might survive iter 1
-        data = vcat(zeros(Float64, 97), [50.0, 100.0, 1000.0])
-        mask_1 = sigma_clip_mask(
-            data; maxiter = 1,
-            center = fast_median!, spread = mad_std!
-        )
-        mask_5 = sigma_clip_mask(
-            data; maxiter = 5,
-            center = fast_median!, spread = mad_std!
-        )
-        # More iterations ⟹ at most as many good pixels remain
-        @test count(mask_5) <= count(mask_1)
-    end
-
-    @testset "2-D array: each element treated independently" begin
-        img = zeros(Float64, 10, 10)
-        img[3, 7] = 999.0
-        mask = sigma_clip_mask(
-            img;
-            center = fast_median!, spread = mad_std!
-        )
-        @test mask[3, 7] == false
-        @test count(mask) == 99
-    end
-
-end # outlier detection correctness
-
-
-# ─────────────────────────────────────────────────────────────────────────
-@testset "edge cases" begin
-
-    @testset "length-0 array" begin
-        @test_nowarn sigma_clip(Float64[])
-        @test_nowarn sigma_clip_mask(Float64[])
-    end
-
-    @testset "length-1 array — no clipping" begin
-        data = [42.0]
-        result = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        @test !isnan(result[1])
-    end
-
-    @testset "length-2 array" begin
-        data = [1.0, 1000.0]
-        result = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        # With only 2 points MAD is 0, std is non-zero — just verify no crash
-        @test length(result) == 2
-    end
-
-    @testset "all-NaN array" begin
-        data = fill(NaN, 20)
-        @test_nowarn sigma_clip!(data)
-        @test all(isnan, data)
-    end
-
-    @testset "all-Inf array" begin
-        data = fill(Inf, 20)
-        result = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        @test all(isnan, result)
-    end
-
-    @testset "mixed NaN and Inf" begin
-        data = [1.0, NaN, Inf, -Inf, 2.0, 3.0]
-        result = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        @test isnan(result[2])
-        @test isnan(result[3])
-        @test isnan(result[4])
-    end
-
-    @testset "array with a single finite element (rest NaN)" begin
-        data = fill(NaN, 10)
-        data[5] = 1.0
-        @test_nowarn sigma_clip!(data)
-    end
-
-    @testset "array with two finite elements (rest NaN)" begin
-        data = fill(NaN, 10)
-        data[3] = 1.0
-        data[7] = 2.0
-        @test_nowarn sigma_clip!(data)
-    end
-
-    @testset "input already clean — no NaN introduced" begin
-        data = collect(1.0:10.0)
-        result = sigma_clip(data; center = fast_median!, spread = mad_std!)
-        @test !any(isnan, result)
-    end
-
-end # edge cases
-
-# end # SigmaClip.jl
+end
