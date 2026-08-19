@@ -8,6 +8,7 @@ using SigmaClip
 
 benchmarks = [
     "sigma_clip.jl",
+    "fast_median.jl",
 ]
 
 const SUITE = BenchmarkGroup()
