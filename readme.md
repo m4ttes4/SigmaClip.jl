@@ -116,3 +116,9 @@ array.
 ## License
 
 SigmaClip.jl is licensed under the MIT License. See [LICENSE](LICENSE).
+
+## Performance
+
+Benchmark comparison with [Astropy](https://www.astropy.org/):
+
+![Sigma clipping performance comparison](benchmark/Astropy-compare/benchmark_plot.png)
