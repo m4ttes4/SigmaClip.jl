@@ -1,7 +1,7 @@
 const MAD_SF = 1.4826022185056018
 
-@inline buffer_view(ws, n::Int) = @view ws.buf[1:n]
-@inline auxiliary_view(ws, n::Int) = @view ws.aux[1:n]
+@inline buffer_view(ws, n::Int) = @view workspace_buffer(ws)[1:n]
+@inline auxiliary_view(ws, n::Int) = @view workspace_auxbuffer(ws)[1:n]
 
 # ─── Quickselect median ──────────────────────────────────────────────
 

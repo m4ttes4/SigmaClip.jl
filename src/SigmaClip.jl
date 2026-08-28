@@ -4,6 +4,7 @@ include("workspace.jl")
 include("stats.jl")
 
 export sigma_clip_mask, sigma_clip_mask!, sigma_clip!, sigma_clip, sigma_clip_bounds
+export sigma_clipped_stats
 export SigmaClipWorkspace
 export fast_median!, mad_std!
 
@@ -46,8 +47,8 @@ function sigma_clip_compact_unsafe(
         center::C,
         spread::S,
         maxiter::Int,
-    ) where {T, M, WS <: SigmaClipWorkspace, C, S}
-    buf = ws.buf
+    ) where {T, M, WS, C, S}
+    buf = workspace_buffer(ws)
     current = pack_valid!(buf, x, exclude)
     current == 0 && throw(ArgumentError("no valid data to clip"))
     iter = 0
@@ -76,6 +77,22 @@ function sigma_clip_compact_unsafe(
     return
 end
 
+function prepare_clip_workspace(
+        x::AbstractArray,
+        exclude,
+        workspace,
+        sigma_lower::Real,
+        sigma_upper::Real,
+        spread,
+        maxiter::Int,
+    )
+    !isnothing(exclude) && validate_axes(exclude, x)
+    validate_maxiter(maxiter)
+    validate_sigma(sigma_lower)
+    validate_sigma(sigma_upper)
+    return prepare_ws(x, spread, workspace)
+end
+
 function sigma_clip_compact(
         x::AbstractArray{T},
         exclude::M,
@@ -86,15 +103,61 @@ function sigma_clip_compact(
         spread::S,
         maxiter::Int,
     ) where {T, M, WS, C, S}
-    !isnothing(exclude) && validate_axes(exclude, x)
-    validate_maxiter(maxiter)
-    validate_sigma(sigma_lower)
-    validate_sigma(sigma_upper)
-
-    ws = prepare_ws(x, spread, workspace)
+    ws = prepare_clip_workspace(
+        x, exclude, workspace, sigma_lower, sigma_upper, spread, maxiter
+    )
     return sigma_clip_compact_unsafe(
         x, exclude, ws, sigma_lower, sigma_upper, center, spread, maxiter
     )
+end
+
+"""
+    sigma_clipped_stats(x; kwargs...) -> NamedTuple
+
+Clip `x` and calculate statistics on the values retained in the internal
+workspace buffer.  The `center` and `spread` callables used for clipping are
+also returned as the `center` and `spread` fields.  Additional statistics can
+be requested with symbol-keyed pairs, for example:
+
+```julia
+sigma_clipped_stats(
+    data;
+    :median => fast_median!,
+    :madstd => mad_std!,
+)
+```
+
+The result is a `NamedTuple` with `center` and `spread` fields followed by the
+requested pair fields.  Each pair callable receives the compacted buffer view
+as its only argument.  The input array is not modified.
+
+Keywords: `workspace=nothing`, `exclude=nothing`, `sigma_lower=3`,
+`sigma_upper=3`, `center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.
+Use `maxiter=-1` to run until convergence.
+"""
+function sigma_clipped_stats(
+        x::AbstractArray{T};
+        workspace::WS = nothing,
+        exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
+        sigma_lower::Real = 3,
+        sigma_upper::Real = 3,
+        center::C = fast_median!,
+        spread::S = mad_std!,
+        maxiter::Int = 5,
+        statistics...,
+    ) where {T, WS, C, S}
+    ws = prepare_clip_workspace(
+        x, exclude, workspace, sigma_lower, sigma_upper, spread, maxiter
+    )
+    _, _, n = sigma_clip_compact_unsafe(
+        x, exclude, ws, sigma_lower, sigma_upper, center, spread, maxiter
+    )
+
+    center_value, spread_value = compute_stats(center, spread, n, ws)
+    data = buffer_view(ws, n)
+    stat_values = Tuple(f(data) for f in Base.values(statistics))
+    extra = NamedTuple{keys(statistics)}(stat_values)
+    return merge((center = center_value, spread = spread_value), extra)
 end
 
 function sigma_clip_bounds(

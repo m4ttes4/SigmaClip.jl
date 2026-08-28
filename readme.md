@@ -16,19 +16,24 @@ Pkg.add("SigmaClip")
 ```julia
 using SigmaClip
 
-data = [1.0, 1.0, 1.0, 50.0, NaN]
+data = [0, 1, 2, 3, 4, 5, 6, 50, NaN, Inf]
 
 sigma_clip(data)
-# [1.0, 1.0, 1.0, NaN, NaN]
+# [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, NaN, NaN, NaN]
 
 sigma_clip_mask(data)
-# Bool[true, true, true, false, false]
+# Bool[true, true, true, true, true, true, true, false, false, false]
 
+# Bounds from the final clipping iteration.
 sigma_clip_bounds(data)
-# (1.0, 1.0)
+# (-5.89561331103361, 11.89561331103361)
+
+sigma_clipped_stats(data; :median => fast_median!, :madstd => mad_std!)
+# (center = 3.0, spread = 2.9652044370112036, median = 3.0, madstd = 2.9652044370112036)
 ```
 
-`sigma_clip`, `sigma_clip_mask`, and `sigma_clip_bounds` leave `data` unchanged.
+`sigma_clip`, `sigma_clip_mask`, `sigma_clip_bounds`, and `sigma_clipped_stats`
+leave `data` unchanged.
 Use `sigma_clip!` to replace rejected values in a floating-point array with
 `NaN`, or `sigma_clip_mask!` to reuse a boolean target array.
 
@@ -41,6 +46,7 @@ Use `sigma_clip!` to replace rejected values in a floating-point array with
 | `sigma_clip_mask(x)` | `BitArray` where `true` means retained. |
 | `sigma_clip_mask!(x, target)` | Writes the mask into `target`. |
 | `sigma_clip_bounds(x)` | Final `(lower, upper)` clipping bounds. |
+| `sigma_clipped_stats(x; pairs...)` | Named tuple of final statistics. |
 
 All clipping functions accept these keywords:
 
@@ -53,6 +59,12 @@ All clipping functions accept these keywords:
 | `center` | `fast_median!` | Center function. |
 | `spread` | `mad_std!` | Spread function. |
 | `maxiter` | `5` | Iteration limit; `-1` runs until convergence. |
+
+> [!WARNING]
+> `exclude` only removes selected values from the calculation of the clipping
+> bounds. It does not protect them from the final clipping step: excluded
+> values are still compared with the final bounds and may be classified as
+> outliers.
 
 Excluded values are still classified against the final bounds:
 
@@ -69,6 +81,26 @@ Lower and upper thresholds can differ:
 ```julia
 sigma_clip!(data; sigma_lower = 2, sigma_upper = 4)
 ```
+
+`sigma_clipped_stats` returns `center` and `spread`, computed from the values
+retained after clipping. Additional statistics can be requested with
+symbol-keyed pairs; each callable receives the compacted internal buffer view:
+
+```julia
+using Statistics
+
+sigma_clipped_stats(
+    data;
+    center = mean,
+    spread = std,
+    :mean => mean,
+    :minimum => minimum,
+)
+# (center = ..., spread = ..., mean = ..., minimum = ...)
+```
+
+Use `:name => function` for pair keys. The unquoted form `name => function`
+requires `name` to be a variable defined in the calling scope.
 
 ## Reusing workspace
 
@@ -95,6 +127,34 @@ using Statistics
 
 workspace = SigmaClipWorkspace(similar(data), nothing)
 sigma_clip_bounds(data; workspace, spread = std)
+```
+
+Custom workspace types can implement the following contract:
+
+```julia
+SigmaClip.workspace_buffer(ws)    # -> writable AbstractVector
+SigmaClip.workspace_auxbuffer(ws) # -> AbstractVector or nothing
+```
+
+The main buffer must have the same element type as the input array and at
+least as many elements. It is used to pack the finite, non-excluded values.
+The auxiliary buffer is required when `spread = mad_std!`; otherwise it may be
+`nothing`. The methods must be defined in the `SigmaClip` namespace:
+
+```julia
+struct CustomWorkspace{B, A}
+    buf::B
+    aux::A
+end
+
+SigmaClip.workspace_buffer(ws::CustomWorkspace) = ws.buf
+SigmaClip.workspace_auxbuffer(ws::CustomWorkspace) = ws.aux
+
+workspace = CustomWorkspace(
+    Vector{Float64}(undef, 1024),
+    Vector{Float64}(undef, 1024),
+)
+sigma_clip_bounds(data; workspace)
 ```
 
 ## Custom statistics
