@@ -74,8 +74,11 @@ function mad_std!(a::AbstractVector{T}, aux::AbstractVector{B}) where {T <: Numb
     n == 0 && return zero(OUT)
 
     m = fast_median!(a)
-    @inbounds for i in eachindex(a)
-        aux[i] = abs(a[i] - m)
+    # The scratch buffer may use different axes, so fill it from its own start.
+    j = firstindex(aux)
+    @inbounds for value in a
+        aux[j] = abs(value - m)
+        j += 1
     end
     res = fast_median!(aux) * MAD_SF
     return convert(OUT, res)
@@ -86,8 +89,11 @@ function mad_std!(a::AbstractVector{T}, aux::AbstractVector{B}, m) where {T <: N
     OUT = float(T)
     n == 0 && return zero(OUT)
 
-    @inbounds for i in eachindex(a)
-        aux[i] = abs(a[i] - m)
+    # The scratch buffer may use different axes, so fill it from its own start.
+    j = firstindex(aux)
+    @inbounds for value in a
+        aux[j] = abs(value - m)
+        j += 1
     end
     res = fast_median!(aux) * MAD_SF
     return convert(OUT, res)

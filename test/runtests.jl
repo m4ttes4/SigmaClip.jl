@@ -1,4 +1,5 @@
 using SigmaClip
+using OffsetArrays
 using Statistics
 using Test
 
@@ -131,4 +132,89 @@ end
 
     @test_throws ArgumentError sigma_clipped_stats(Float64[])
     @test_throws ArgumentError sigma_clipped_stats([1.0]; exclude = trues(1))
+end
+
+@testset "generic axes" begin
+    view_all(x) = view(x, ntuple(_ -> Colon(), ndims(x))...)
+    offset_copy(x) = OffsetArray(copy(x), ntuple(_ -> -2, ndims(x)))
+
+    @testset "fast_median!" begin
+        data = [4.0, 1.0, 3.0, 2.0]
+        reference_input = copy(data)
+        reference = fast_median!(reference_input)
+
+        offset_input = offset_copy(data)
+        @test fast_median!(offset_input) == reference
+        @test axes(offset_input) == axes(offset_copy(data))
+
+        @test fast_median!(view_all(copy(data))) == reference
+    end
+
+    @testset "mad_std!" begin
+        data = [1.0, 1.0, 1.0, 10.0]
+        reference = mad_std!(copy(data))
+
+        @test mad_std!(offset_copy(data)) == reference
+        @test mad_std!(view_all(copy(data))) == reference
+
+        @test mad_std!(offset_copy(data), similar(data)) == reference
+        @test mad_std!(offset_copy(data), similar(data), 1.0) == reference
+
+        offset_input = offset_copy(data)
+        offset_aux = offset_copy(data)
+        @test mad_std!(offset_input, offset_aux) == reference
+        @test axes(offset_input) == axes(offset_aux)
+    end
+
+    @testset "scalar results" begin
+        data = [-100.0, 0.0, 0.0, 0.0, 50.0]
+        excluded = Bool[true, false, false, false, true]
+        reference_bounds = sigma_clip_bounds(data; exclude = excluded)
+        reference_stats = sigma_clipped_stats(data; :mean => mean)
+
+        offset_data = offset_copy(data)
+        offset_excluded = offset_copy(excluded)
+        @test sigma_clip_bounds(offset_data; exclude = offset_excluded) == reference_bounds
+        @test sigma_clip_bounds(view_all(copy(data)); exclude = view_all(copy(excluded))) == reference_bounds
+
+        @test sigma_clipped_stats(offset_data; exclude = offset_excluded, :mean => mean) == reference_stats
+        @test sigma_clipped_stats(view_all(copy(data)); :mean => mean) ==
+              sigma_clipped_stats(data; :mean => mean)
+    end
+
+    @testset "clipped arrays" for data in (
+        [1.0, 1.0, 1.0, 9.0, NaN],
+        reshape([1.0, 1.0, 1.0, 9.0, NaN, 1.0], 2, 3),
+    )
+        reference = sigma_clip(data)
+        offset_result = sigma_clip(offset_copy(data))
+        @test isequal(collect(offset_result), collect(reference))
+        @test axes(offset_result) == axes(offset_copy(data))
+        @test isequal(sigma_clip(view_all(copy(data))), reference)
+
+        reference_input = copy(data)
+        sigma_clip!(reference_input)
+        offset_input = offset_copy(data)
+        @test sigma_clip!(offset_input) === offset_input
+        @test isequal(collect(offset_input), collect(reference_input))
+        @test axes(offset_input) == axes(offset_copy(data))
+
+        reference_target = sigma_clip_mask(data)
+        @test let offset_result = sigma_clip_mask(offset_copy(data))
+            isequal(collect(offset_result), collect(reference_target)) &&
+            axes(offset_result) == axes(offset_copy(data))
+        end
+        @test isequal(sigma_clip_mask(view_all(copy(data))), reference_target)
+
+        target = falses(size(data))
+        sigma_clip_mask!(data, target)
+        offset_input = offset_copy(data)
+        offset_target = OffsetArray(falses(size(data)), ntuple(_ -> -2, ndims(data)))
+        @test sigma_clip_mask!(offset_input, offset_target) === offset_target
+        @test offset_target == OffsetArray(target, ntuple(_ -> -2, ndims(data)))
+        @test axes(offset_target) == axes(offset_input)
+        view_target = view_all(falses(size(data)))
+        @test sigma_clip_mask!(view_all(copy(data)), view_target) === view_target
+        @test view_target == target
+    end
 end

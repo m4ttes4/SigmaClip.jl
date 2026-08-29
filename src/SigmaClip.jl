@@ -218,7 +218,8 @@ function sigma_clip_mask(
         spread::S = mad_std!,
         maxiter::Int = 5,
     ) where {T, WS, C, S}
-    target = trues(size(x))
+    # Preserve the input axes while retaining the documented packed mask type.
+    target = similar(BitArray, axes(x))
     return sigma_clip_mask!(
         x, target; workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
     )
