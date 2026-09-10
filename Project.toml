@@ -6,8 +6,8 @@ authors = ["Matteo Sapori <matteosap@hotmail.com>"]
 [compat]
 Aqua = "^0.8"
 OffsetArrays = "1"
-Random = "^1.11.0"
-Statistics = "^1.11.1"
+Random = "1"
+Statistics = "1"
 Test = "^1.0"
 julia = "^1.10"
 
