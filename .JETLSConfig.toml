@@ -1,0 +1,23 @@
+formatter = "Runic"                # String preset: "Runic" (default) or "JuliaFormatter"
+
+[full_analysis]
+debounce = 1.0  # Wait 2 seconds after save before analyzing
+auto_instantiate = true  # Disable automatic instantiation
+
+[diagnostic]
+all_files = false  # Disable diagnostics for unopened files
+
+
+[code_lens]
+references = false                 # boolean, default: false
+testrunner = true                  # boolean, default: true
+
+[inlay_hint]
+[inlay_hint.block_end]
+enabled = true                     # boolean, default: true
+min_lines = 25                     # integer, default: 25
+[inlay_hint.types]
+enabled = false  # Hide type hints; keep `end`-tag hints
+
+[testrunner]
+executable = "testrunner"          # string, default: "testrunner" (or "testrunner.bat" on Windows)
