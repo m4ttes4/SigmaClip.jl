@@ -3,6 +3,11 @@ using OffsetArrays
 using Statistics
 using Test
 
+function workspace_allocations(data, target, workspace)
+    sigma_clip_mask!(data, target; workspace)
+    return @allocated sigma_clip_mask!(data, target; workspace)
+end
+
 @testset "statistics" begin
     @test fast_median!([3.0, 1.0, 2.0]) == 2.0
     @test fast_median!([4.0, 1.0, 3.0, 2.0]) == 2.5
@@ -39,8 +44,7 @@ end
     target = falses(length(data))
     workspace = SigmaClipWorkspace(similar(data), similar(data))
 
-    sigma_clip_mask!(data, target; workspace)
-    @test (@allocated sigma_clip_mask!(data, target; workspace)) == 0
+    @test workspace_allocations(data, target, workspace) == 0
     @test target == vcat(trues(64), false)
 
     no_aux = SigmaClipWorkspace(similar(data), nothing)
