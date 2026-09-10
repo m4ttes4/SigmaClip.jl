@@ -1,5 +1,8 @@
 # SigmaClip.jl
 
+[![CI](https://github.com/m4ttes4/SigmaClip.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/m4ttes4/SigmaClip.jl/actions/workflows/CI.yml)
+[![codecov](https://codecov.io/gh/m4ttes4/SigmaClip.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/m4ttes4/SigmaClip.jl)
+
 SigmaClip.jl removes outliers from numeric arrays with iterative sigma clipping.
 It supports clipped copies, in-place clipping, masks, bounds, reusable buffers,
 and custom center or spread functions. There are no runtime dependencies.
