@@ -1,3 +1,13 @@
+"""
+    SigmaClipWorkspace(buf::AbstractVector, aux::Union{Nothing, AbstractVector})
+
+Reusable scratch buffers for the `workspace` keyword of the sigma-clipping
+functions. `buf` must have the input's element type and at least as many
+elements as the input; it receives a copy of the finite, non-excluded values.
+`aux` is the scratch buffer needed by [`mad_std!`](@ref) and must also hold at
+least as many elements as the input; pass `nothing` when the spread estimator
+does not need it.
+"""
 struct SigmaClipWorkspace{B <: AbstractVector, A <: Union{Nothing, AbstractVector}}
     buf::B
     aux::A

@@ -12,3 +12,6 @@ NEWS.md
 AGENTS.md
 .codex
 Manifest.toml
+
+# Documentation build
+docs/build/
