@@ -9,3 +9,6 @@ benchmarks/median_mad_astropy_results.csv
 benchmark/Astropy-compare/*_results.csv
 NEWS.md
 .DS_Store
+AGENTS.md
+.codex
+Manifest.toml
