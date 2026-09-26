@@ -2,9 +2,8 @@
 
 [![CI](https://github.com/m4ttes4/SigmaClip.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/m4ttes4/SigmaClip.jl/actions/workflows/CI.yml)
 [![codecov](https://codecov.io/gh/m4ttes4/SigmaClip.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/m4ttes4/SigmaClip.jl)
-[![Docs: stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://m4ttes4.github.io/SigmaClip.jl/stable/)
 [![Docs: dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://m4ttes4.github.io/SigmaClip.jl/dev/)
-[![Version](https://juliahub.com/docs/General/SigmaClip/stable/version.svg)](https://juliahub.com/ui/Packages/General/SigmaClip)
+[![Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fm4ttes4%2FSigmaClip.jl%2Fmain%2FProject.toml&query=%24.version&label=version&prefix=v)](https://juliahub.com/ui/Packages/General/SigmaClip)
 
 SigmaClip.jl finds outliers in numeric arrays with iterative sigma clipping.
 It returns clipped copies, clips in place, builds validity masks, reports the
@@ -41,7 +40,7 @@ sigma_clipped_stats(data)
 
 By default the center is the median and the spread is the median absolute
 deviation scaled to a normal standard deviation, with 3σ bounds and at most
-5 iterations. See the [documentation](https://m4ttes4.github.io/SigmaClip.jl/stable/)
+5 iterations. See the [documentation](https://m4ttes4.github.io/SigmaClip.jl/dev/)
 for how the algorithm treats non-finite and excluded values, in-place clipping,
 custom statistics, reusable workspaces, and the API reference.
 
