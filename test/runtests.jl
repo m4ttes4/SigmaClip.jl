@@ -8,6 +8,11 @@ function workspace_allocations(data, target, workspace)
     return @allocated sigma_clip_mask!(data, target, 3; workspace)
 end
 
+function workspace_allocations_asymmetric(data, target, workspace)
+    sigma_clip_mask!(data, target, 2, 4; workspace)
+    return @allocated sigma_clip_mask!(data, target, 2, 4; workspace)
+end
+
 @testset "statistics" begin
     @test fast_median!([3.0, 1.0, 2.0]) == 2.0
     @test fast_median!([4.0, 1.0, 3.0, 2.0]) == 2.5
@@ -31,10 +36,44 @@ end
         maxiter = 1,
     ) == (-2.0, 2.0)
 
-    @test_throws ArgumentError sigma_clip_bounds(Float64[], 3)
-    @test_throws ArgumentError sigma_clip_bounds([1.0], 0, 3)
-    @test_throws ArgumentError sigma_clip_bounds([1.0], 3; maxiter = 0)
+    @test_throws "no valid data" sigma_clip_bounds(Float64[], 3)
+    @test_throws "finite and positive" sigma_clip_bounds([1.0], 0, 3)
+    @test_throws "maxiter" sigma_clip_bounds([1.0], 3; maxiter = 0)
     @test_throws DimensionMismatch sigma_clip_bounds([1.0], 3; exclude = falses(2))
+end
+
+@testset "positional thresholds" begin
+    plain_spread(x) = maximum(abs, x .- mean(x)) / 2
+    # center 0, spread 2: the first threshold scales the lower bound only.
+    @test sigma_clip_bounds(
+        [-4.0, -1.0, 0.0, 1.0, 4.0], 1, 2;
+        center = mean,
+        spread = plain_spread,
+        maxiter = 1,
+    ) == (-2.0, 4.0)
+
+    data = [-10.0, 1.0, 2.0, 3.0, 4.0, 5.0, 30.0]
+    @test sigma_clip_bounds(data, 2) == sigma_clip_bounds(data, 2, 2)
+
+    @test_throws "finite and positive" sigma_clip_bounds([1.0], 3, -1)
+    @test_throws "finite and positive" sigma_clip_bounds([1.0], Inf)
+    @test_throws "finite and positive" sigma_clip_bounds([1.0], NaN, 3)
+
+    @test_throws "sigma_clip requires sigma" sigma_clip([1.0, 2.0])
+    @test_throws "sigma_clip requires sigma" sigma_clip([1, 2])
+    @test_throws "sigma_clip! requires sigma" sigma_clip!([1.0, 2.0])
+    @test_throws "sigma_clip! requires sigma" sigma_clip!([1, 2])
+    @test_throws "sigma_clip_mask requires sigma" sigma_clip_mask([1.0, 2.0])
+    @test_throws "sigma_clip_mask! requires sigma" sigma_clip_mask!([1.0, 2.0], falses(2))
+    @test_throws "sigma_clip_bounds requires sigma" sigma_clip_bounds([1.0, 2.0])
+    @test_throws "sigma_clipped_stats requires sigma" sigma_clipped_stats([1.0, 2.0])
+    @test_throws "sigma_clipped_stats requires sigma" sigma_clipped_stats([1.0, 2.0]; :m => mean)
+
+    # The removed keywords are rejected in both the old and the mixed form.
+    @test_throws "requires sigma" sigma_clip_bounds([1.0, 2.0]; sigma_lower = 2, sigma_upper = 4)
+    @test_throws MethodError sigma_clip_bounds([1.0, 2.0], 3; sigma_lower = 2)
+
+    @test isempty(Test.detect_ambiguities(SigmaClip))
 end
 
 @testset "workspace" begin
@@ -43,11 +82,12 @@ end
     workspace = SigmaClipWorkspace(similar(data), similar(data))
 
     @test workspace_allocations(data, target, workspace) == 0
+    @test workspace_allocations_asymmetric(data, target, workspace) == 0
     @test target == vcat(trues(64), false)
 
     no_aux = SigmaClipWorkspace(similar(data), nothing)
     @test sigma_clip_bounds(data, 3; workspace = no_aux, spread = std) isa Tuple
-    @test_throws ArgumentError sigma_clip_bounds(data, 3; workspace = no_aux)
+    @test_throws "requires an auxiliary buffer" sigma_clip_bounds(data, 3; workspace = no_aux)
 
     struct CustomWorkspace{B, A}
         buf::B
@@ -73,7 +113,7 @@ end
     inplace = copy(data)
     @test sigma_clip!(inplace, 3) === inplace
     @test isequal(inplace, [1.0, 1.0, 1.0, NaN, NaN])
-    @test_throws ArgumentError sigma_clip!([1, 1, 1, 9], 3)
+    @test_throws "cannot write NaN" sigma_clip!([1, 1, 1, 9], 3)
 
     @test isequal(sigma_clip(data, 3), [1.0, 1.0, 1.0, NaN, NaN])
     @test isequal(sigma_clip([2, 2, 2, 8], 3), [2.0, 2.0, 2.0, NaN])
@@ -130,8 +170,8 @@ end
     @test excluded_result.spread == 0.0
     @test excluded_result.median == 0.0
 
-    @test_throws ArgumentError sigma_clipped_stats(Float64[], 3)
-    @test_throws ArgumentError sigma_clipped_stats([1.0], 3; exclude = trues(1))
+    @test_throws "no valid data" sigma_clipped_stats(Float64[], 3)
+    @test_throws "no valid data" sigma_clipped_stats([1.0], 3; exclude = trues(1))
 end
 
 @testset "generic axes" begin
