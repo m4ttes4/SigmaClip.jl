@@ -27,8 +27,9 @@ Each call runs the following loop on a private copy of the input:
    defaults are the median ([`fast_median!`](@ref)) and the median absolute
    deviation scaled to a normal standard deviation ([`mad_std!`](@ref)).
 3. Compute the bounds ``[c - \sigma_\text{lower} s,\; c + \sigma_\text{upper} s]``
-   and drop the values outside them. The thresholds are passed by the caller,
-   as `f(x, sigma)` or `f(x, sigma_lower, sigma_upper)`; there is no default.
+   and drop the values outside them. The thresholds are passed by the caller
+   as `f(x, sigma_lower, sigma_upper)`; `f(x, sigma)` is shorthand for
+   `f(x, sigma, sigma)`. There is no default.
 4. Repeat from step 2 until no value is dropped, `maxiter` iterations have run
    (`maxiter = -1` means no limit), or fewer than two values remain.
 

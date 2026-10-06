@@ -15,10 +15,12 @@ DocTestSetup = :(using SigmaClip)
 | [`sigma_clip_bounds(x, sigma)`](@ref sigma_clip_bounds) | Final `(lower, upper)` bounds. |
 | [`sigma_clipped_stats(x, sigma; pairs...)`](@ref sigma_clipped_stats) | Named tuple of statistics on the retained values. |
 
-The thresholds are positional and have no default. A single `sigma` sets both
-bounds; `sigma_lower, sigma_upper` set them separately, as in
-`sigma_clip(x, 2, 4)`. Both are in units of the spread and must be finite and
-positive.
+The thresholds are positional and have no default. Every function takes the
+lower and upper thresholds as `sigma_lower, sigma_upper`, as in
+`sigma_clip(x, 2, 4)`. Passing a single `sigma` is shorthand for passing it
+twice: `sigma_clip(x, 3)` is the same call as `sigma_clip(x, 3, 3)`, and the
+same holds for every function in the table. The thresholds are in units of the
+spread and must be finite and positive.
 
 All of them accept the same keywords:
 
