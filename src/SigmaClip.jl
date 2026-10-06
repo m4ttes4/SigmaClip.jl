@@ -132,10 +132,12 @@ The result is a `NamedTuple` with `center` and `spread` fields followed by the
 requested pair fields.  Each pair callable receives the compacted buffer view
 as its only argument.  The input array is not modified.
 
-The thresholds are required and must be finite and positive; a single `sigma`
-is used for both sides.  Keywords: `workspace=nothing`, `exclude=nothing`,
-`center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.  Use `maxiter=-1`
-to run until convergence.  Any other keyword is taken as a statistic pair.
+The thresholds are required and must be finite and positive.
+`sigma_clipped_stats(x, sigma)` is shorthand for
+`sigma_clipped_stats(x, sigma, sigma)`.  Keywords: `workspace=nothing`,
+`exclude=nothing`, `center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.
+Use `maxiter=-1` to run until convergence.  Any other keyword is taken as a
+statistic pair.
 """
 function sigma_clipped_stats(
         x::AbstractArray{T},
@@ -180,10 +182,11 @@ Return the final iterative sigma-clipping bounds without modifying `x`.
 Non-finite values and entries marked by `exclude` are ignored while estimating
 the bounds.
 
-The thresholds are required and must be finite and positive; a single `sigma`
-is used for both sides.  Keywords: `workspace=nothing`, `exclude=nothing`,
-`center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.  Use `maxiter=-1`
-to run until convergence.
+The thresholds are required and must be finite and positive.
+`sigma_clip_bounds(x, sigma)` is shorthand for
+`sigma_clip_bounds(x, sigma, sigma)`.  Keywords: `workspace=nothing`,
+`exclude=nothing`, `center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.
+Use `maxiter=-1` to run until convergence.
 """
 function sigma_clip_bounds(
         x::AbstractArray{T},
@@ -216,6 +219,7 @@ sigma_clip_bounds(::AbstractArray; _kw...) = throw(
     sigma_clip_mask(x, sigma_lower, sigma_upper; kwargs...) -> BitArray
 
 Return a mask where `true` marks finite values inside the final clipping bounds.
+`sigma_clip_mask(x, sigma)` is shorthand for `sigma_clip_mask(x, sigma, sigma)`.
 Accepts the same thresholds and keywords as [`sigma_clip_bounds`](@ref).
 """
 sigma_clip_mask(x::AbstractArray, sigma_lower::Real, sigma_upper::Real; kw...) =
@@ -237,7 +241,9 @@ sigma_clip_mask(::AbstractArray; _kw...) = throw(
     sigma_clip_mask!(x, target, sigma_lower, sigma_upper; kwargs...) -> target
 
 Write the validity mask into `target`, which must have the same axes as `x`.
-Accepts the same thresholds and keywords as [`sigma_clip_bounds`](@ref).
+`sigma_clip_mask!(x, target, sigma)` is shorthand for
+`sigma_clip_mask!(x, target, sigma, sigma)`. Accepts the same thresholds and
+keywords as [`sigma_clip_bounds`](@ref).
 """
 function sigma_clip_mask!(
         x::AbstractArray{T},
@@ -276,7 +282,8 @@ sigma_clip_mask!(::AbstractArray, ::AbstractArray{Bool}; _kw...) = throw(
     sigma_clip!(x, sigma_lower, sigma_upper; kwargs...) -> x
 
 Replace non-finite values and outliers in `x` with `NaN`. The element type must
-represent `NaN`. Accepts the same thresholds and keywords as
+represent `NaN`. `sigma_clip!(x, sigma)` is shorthand for
+`sigma_clip!(x, sigma, sigma)`. Accepts the same thresholds and keywords as
 [`sigma_clip_bounds`](@ref).
 """
 function sigma_clip!(
@@ -318,6 +325,7 @@ sigma_clip!(::AbstractArray; _kw...) = throw(
     sigma_clip(x, sigma_lower, sigma_upper; kwargs...)
 
 Return a clipped copy of `x`; integer inputs are converted to floating point.
+`sigma_clip(x, sigma)` is shorthand for `sigma_clip(x, sigma, sigma)`.
 Accepts the same thresholds and keywords as [`sigma_clip_bounds`](@ref).
 """
 sigma_clip(x::AbstractArray{<:Number}, sigma_lower::Real, sigma_upper::Real; kw...) =
