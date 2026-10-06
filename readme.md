@@ -25,10 +25,10 @@ using SigmaClip
 
 data = [0, 1, 2, 3, 4, 5, 6, 50, NaN, Inf]
 
-sigma_clip(data, 3)
+sigma_clip(data, 3, 3)             #== sigma_clip(data, lower, upper), or sigma_clip(data, 3)
 # [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, NaN, NaN, NaN]
 
-sigma_clip_mask(data, 3)   # validity mask: true = finite and retained
+sigma_clip_mask(data, 3)        # validity mask: true = finite and retained
 # Bool[1, 1, 1, 1, 1, 1, 1, 0, 0, 0]
 
 sigma_clip_bounds(data, 3)
@@ -38,9 +38,7 @@ sigma_clipped_stats(data, 3)
 # (center = 3.0, spread = 2.9652044370112036)
 ```
 
-The sigma threshold has no default: `sigma_clip(data, 3)` uses 3σ on both
-sides, and `sigma_clip(data, 2, 4)` sets the lower and upper thresholds
-separately. By default the center is the median and the spread is the median
+By default the center is the median and the spread is the median
 absolute deviation scaled to a normal standard deviation, with at most 5
 iterations. See the [documentation](https://m4ttes4.github.io/SigmaClip.jl/dev/)
 for how the algorithm treats non-finite and excluded values, in-place clipping,
