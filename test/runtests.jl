@@ -4,8 +4,8 @@ using Statistics
 using Test
 
 function workspace_allocations(data, target, workspace)
-    sigma_clip_mask!(data, target; workspace)
-    return @allocated sigma_clip_mask!(data, target; workspace)
+    sigma_clip_mask!(data, target, 3; workspace)
+    return @allocated sigma_clip_mask!(data, target, 3; workspace)
 end
 
 @testset "statistics" begin
@@ -16,27 +16,25 @@ end
 
 @testset "bounds" begin
     data = [0.0, 0.0, 0.0, NaN, Inf, -Inf, 50.0]
-    @test sigma_clip_bounds(data) == (0.0, 0.0)
-    @test sigma_clip_bounds(Float32[1, 1, 1, 9]) == (1.0f0, 1.0f0)
-    @test sigma_clip_bounds(reshape([1.0, 1.0, 1.0, 99.0], 2, 2)) == (1.0, 1.0)
+    @test sigma_clip_bounds(data, 3) == (0.0, 0.0)
+    @test sigma_clip_bounds(Float32[1, 1, 1, 9], 3) == (1.0f0, 1.0f0)
+    @test sigma_clip_bounds(reshape([1.0, 1.0, 1.0, 99.0], 2, 2), 3) == (1.0, 1.0)
 
     excluded = Bool[true, false, false, false, true]
-    @test sigma_clip_bounds([-100.0, 0.0, 0.0, 0.0, 50.0]; exclude = excluded) == (0.0, 0.0)
+    @test sigma_clip_bounds([-100.0, 0.0, 0.0, 0.0, 50.0], 3; exclude = excluded) == (0.0, 0.0)
 
     plain_spread(x) = maximum(abs, x .- mean(x)) / 2
     @test sigma_clip_bounds(
-        [-4.0, -1.0, 0.0, 1.0, 4.0];
+        [-4.0, -1.0, 0.0, 1.0, 4.0], 1, 1;
         center = mean,
         spread = plain_spread,
-        sigma_lower = 1,
-        sigma_upper = 1,
         maxiter = 1,
     ) == (-2.0, 2.0)
 
-    @test_throws ArgumentError sigma_clip_bounds(Float64[])
-    @test_throws ArgumentError sigma_clip_bounds([1.0]; sigma_lower = 0)
-    @test_throws ArgumentError sigma_clip_bounds([1.0]; maxiter = 0)
-    @test_throws DimensionMismatch sigma_clip_bounds([1.0]; exclude = falses(2))
+    @test_throws ArgumentError sigma_clip_bounds(Float64[], 3)
+    @test_throws ArgumentError sigma_clip_bounds([1.0], 0, 3)
+    @test_throws ArgumentError sigma_clip_bounds([1.0], 3; maxiter = 0)
+    @test_throws DimensionMismatch sigma_clip_bounds([1.0], 3; exclude = falses(2))
 end
 
 @testset "workspace" begin
@@ -48,8 +46,8 @@ end
     @test target == vcat(trues(64), false)
 
     no_aux = SigmaClipWorkspace(similar(data), nothing)
-    @test sigma_clip_bounds(data; workspace = no_aux, spread = std) isa Tuple
-    @test_throws ArgumentError sigma_clip_bounds(data; workspace = no_aux)
+    @test sigma_clip_bounds(data, 3; workspace = no_aux, spread = std) isa Tuple
+    @test_throws ArgumentError sigma_clip_bounds(data, 3; workspace = no_aux)
 
     struct CustomWorkspace{B, A}
         buf::B
@@ -60,36 +58,36 @@ end
     SigmaClip.workspace_auxbuffer(ws::CustomWorkspace) = ws.aux
 
     custom_workspace = CustomWorkspace(similar(data), similar(data))
-    @test sigma_clip_bounds(data; workspace = custom_workspace) == (1.0, 1.0)
+    @test sigma_clip_bounds(data, 3; workspace = custom_workspace) == (1.0, 1.0)
 end
 
 @testset "public wrappers" begin
     data = [1.0, 1.0, 1.0, 9.0, NaN]
     expected = Bool[true, true, true, false, false]
-    @test sigma_clip_mask(data) == expected
+    @test sigma_clip_mask(data, 3) == expected
 
     target = trues(length(data))
-    @test sigma_clip_mask!(data, target) === target
+    @test sigma_clip_mask!(data, target, 3) === target
     @test target == expected
 
     inplace = copy(data)
-    @test sigma_clip!(inplace) === inplace
+    @test sigma_clip!(inplace, 3) === inplace
     @test isequal(inplace, [1.0, 1.0, 1.0, NaN, NaN])
-    @test_throws ArgumentError sigma_clip!([1, 1, 1, 9])
+    @test_throws ArgumentError sigma_clip!([1, 1, 1, 9], 3)
 
-    @test isequal(sigma_clip(data), [1.0, 1.0, 1.0, NaN, NaN])
-    @test isequal(sigma_clip([2, 2, 2, 8]), [2.0, 2.0, 2.0, NaN])
+    @test isequal(sigma_clip(data, 3), [1.0, 1.0, 1.0, NaN, NaN])
+    @test isequal(sigma_clip([2, 2, 2, 8], 3), [2.0, 2.0, 2.0, NaN])
     @test isequal(data, [1.0, 1.0, 1.0, 9.0, NaN])
 end
 
 @testset "sigma-clipped statistics" begin
     data = [1.0, 1.0, 1.0, 9.0, NaN]
-    default_result = sigma_clipped_stats(data)
+    default_result = sigma_clipped_stats(data, 3)
     @test propertynames(default_result) == (:center, :spread)
     @test default_result == (center = 1.0, spread = 0.0)
 
     result = sigma_clipped_stats(
-        data;
+        data, 3;
         :median => fast_median!,
         :madstd => mad_std!,
         :mean => mean,
@@ -105,11 +103,9 @@ end
 
     plain_spread(x) = maximum(abs, x .- mean(x)) / 2
     custom = sigma_clipped_stats(
-        [-4.0, -1.0, 0.0, 1.0, 4.0];
+        [-4.0, -1.0, 0.0, 1.0, 4.0], 1, 1;
         center = mean,
         spread = plain_spread,
-        sigma_lower = 1,
-        sigma_upper = 1,
         maxiter = 1,
         :minimum => minimum,
         :maximum => maximum,
@@ -124,7 +120,7 @@ end
     excluded = Bool[true, false, false, false, true]
     workspace = SigmaClipWorkspace(Vector{Float64}(undef, 5), Vector{Float64}(undef, 5))
     excluded_result = sigma_clipped_stats(
-        [-100.0, 0.0, 0.0, 0.0, 50.0];
+        [-100.0, 0.0, 0.0, 0.0, 50.0], 3;
         workspace,
         exclude = excluded,
         :median => fast_median!,
@@ -134,8 +130,8 @@ end
     @test excluded_result.spread == 0.0
     @test excluded_result.median == 0.0
 
-    @test_throws ArgumentError sigma_clipped_stats(Float64[])
-    @test_throws ArgumentError sigma_clipped_stats([1.0]; exclude = trues(1))
+    @test_throws ArgumentError sigma_clipped_stats(Float64[], 3)
+    @test_throws ArgumentError sigma_clipped_stats([1.0], 3; exclude = trues(1))
 end
 
 @testset "generic axes" begin
@@ -173,52 +169,52 @@ end
     @testset "scalar results" begin
         data = [-100.0, 0.0, 0.0, 0.0, 50.0]
         excluded = Bool[true, false, false, false, true]
-        reference_bounds = sigma_clip_bounds(data; exclude = excluded)
-        reference_stats = sigma_clipped_stats(data; :mean => mean)
+        reference_bounds = sigma_clip_bounds(data, 3; exclude = excluded)
+        reference_stats = sigma_clipped_stats(data, 3; :mean => mean)
 
         offset_data = offset_copy(data)
         offset_excluded = offset_copy(excluded)
-        @test sigma_clip_bounds(offset_data; exclude = offset_excluded) == reference_bounds
-        @test sigma_clip_bounds(view_all(copy(data)); exclude = view_all(copy(excluded))) == reference_bounds
+        @test sigma_clip_bounds(offset_data, 3; exclude = offset_excluded) == reference_bounds
+        @test sigma_clip_bounds(view_all(copy(data)), 3; exclude = view_all(copy(excluded))) == reference_bounds
 
-        @test sigma_clipped_stats(offset_data; exclude = offset_excluded, :mean => mean) == reference_stats
-        @test sigma_clipped_stats(view_all(copy(data)); :mean => mean) ==
-              sigma_clipped_stats(data; :mean => mean)
+        @test sigma_clipped_stats(offset_data, 3; exclude = offset_excluded, :mean => mean) == reference_stats
+        @test sigma_clipped_stats(view_all(copy(data)), 3; :mean => mean) ==
+              sigma_clipped_stats(data, 3; :mean => mean)
     end
 
     @testset "clipped arrays" for data in (
         [1.0, 1.0, 1.0, 9.0, NaN],
         reshape([1.0, 1.0, 1.0, 9.0, NaN, 1.0], 2, 3),
     )
-        reference = sigma_clip(data)
-        offset_result = sigma_clip(offset_copy(data))
+        reference = sigma_clip(data, 3)
+        offset_result = sigma_clip(offset_copy(data), 3)
         @test isequal(collect(offset_result), collect(reference))
         @test axes(offset_result) == axes(offset_copy(data))
-        @test isequal(sigma_clip(view_all(copy(data))), reference)
+        @test isequal(sigma_clip(view_all(copy(data)), 3), reference)
 
         reference_input = copy(data)
-        sigma_clip!(reference_input)
+        sigma_clip!(reference_input, 3)
         offset_input = offset_copy(data)
-        @test sigma_clip!(offset_input) === offset_input
+        @test sigma_clip!(offset_input, 3) === offset_input
         @test isequal(collect(offset_input), collect(reference_input))
         @test axes(offset_input) == axes(offset_copy(data))
 
-        reference_target = sigma_clip_mask(data)
-        @test let offset_result = sigma_clip_mask(offset_copy(data))
+        reference_target = sigma_clip_mask(data, 3)
+        @test let offset_result = sigma_clip_mask(offset_copy(data), 3)
             isequal(collect(offset_result), collect(reference_target)) &&
             axes(offset_result) == axes(offset_copy(data))
         end
-        @test isequal(sigma_clip_mask(view_all(copy(data))), reference_target)
+        @test isequal(sigma_clip_mask(view_all(copy(data)), 3), reference_target)
 
         target = falses(size(data))
-        sigma_clip_mask!(data, target)
+        sigma_clip_mask!(data, target, 3)
         offset_input = offset_copy(data)
         offset_target = OffsetArray(falses(size(data)), ntuple(_ -> -2, ndims(data)))
-        @test sigma_clip_mask!(offset_input, offset_target) === offset_target
+        @test sigma_clip_mask!(offset_input, offset_target, 3) === offset_target
         @test offset_target == OffsetArray(target, ntuple(_ -> -2, ndims(data)))
         @test axes(offset_target) == axes(offset_input)
         view_target = view_all(falses(size(data)))
-        @test sigma_clip_mask!(view_all(copy(data)), view_target) === view_target
+        @test sigma_clip_mask!(view_all(copy(data)), view_target, 3) === view_target
         @test view_target == target
     end
 end

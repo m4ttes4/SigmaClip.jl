@@ -50,7 +50,7 @@ the final bounds and can be retained or classified as outliers.
 ```jldoctest quickstart
 julia> data = [0, 1, 2, 3, 4, 5, 6, 50, NaN, Inf];
 
-julia> sigma_clip(data)
+julia> sigma_clip(data, 3)
 10-element Vector{Float64}:
    0.0
    1.0
@@ -63,7 +63,7 @@ julia> sigma_clip(data)
  NaN
  NaN
 
-julia> findall(sigma_clip_mask(data))
+julia> findall(sigma_clip_mask(data, 3))
 7-element Vector{Int64}:
  1
  2
@@ -73,10 +73,10 @@ julia> findall(sigma_clip_mask(data))
  6
  7
 
-julia> sigma_clip_bounds(data)
+julia> sigma_clip_bounds(data, 3)
 (-5.89561331103361, 11.89561331103361)
 
-julia> sigma_clipped_stats(data)
+julia> sigma_clipped_stats(data, 3)
 (center = 3.0, spread = 2.9652044370112036)
 ```
 
