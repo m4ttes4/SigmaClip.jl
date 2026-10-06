@@ -49,10 +49,10 @@ open(OUTPUT, "w") do io
         workspace = SigmaClipWorkspace(Vector{Float64}(undef, n), Vector{Float64}(undef, n))
         samples = n <= 10_000 ? 50 : 15
 
-        out_of_place = @benchmarkable sigma_clip($data)
+        out_of_place = @benchmarkable sigma_clip($data, SIGMA)
         write_row(io, "vector", string(n), n, "out_of_place", measure(out_of_place, samples), SEED + n, samples)
 
-        in_place = @benchmarkable sigma_clip!(x; workspace = $workspace) setup = (x = copy($data)) evals = 1
+        in_place = @benchmarkable sigma_clip!(x, SIGMA; workspace = $workspace) setup = (x = copy($data)) evals = 1
         write_row(io, "vector", string(n), n, "in_place", measure(in_place, samples), SEED + n, samples)
     end
 
@@ -61,10 +61,10 @@ open(OUTPUT, "w") do io
         workspace = SigmaClipWorkspace(Vector{Float64}(undef, length(data)), Vector{Float64}(undef, length(data)))
         samples = length(data) <= 10_000 ? 50 : 15
 
-        out_of_place = @benchmarkable sigma_clip($data)
+        out_of_place = @benchmarkable sigma_clip($data, SIGMA)
         write_row(io, "matrix", join(shape, "x"), length(data), "out_of_place", measure(out_of_place, samples), SEED + prod(shape), samples)
 
-        in_place = @benchmarkable sigma_clip!(x; workspace = $workspace) setup = (x = copy($data)) evals = 1
+        in_place = @benchmarkable sigma_clip!(x, SIGMA; workspace = $workspace) setup = (x = copy($data)) evals = 1
         write_row(io, "matrix", join(shape, "x"), length(data), "in_place", measure(in_place, samples), SEED + prod(shape), samples)
     end
 end
