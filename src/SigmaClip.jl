@@ -135,12 +135,15 @@ Keywords: `workspace=nothing`, `exclude=nothing`, `sigma_lower=3`,
 `sigma_upper=3`, `center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.
 Use `maxiter=-1` to run until convergence.
 """
+sigma_clipped_stats(x::AbstractArray; sigma_lower::Real = 3, sigma_upper::Real = 3, kw...) =
+    sigma_clipped_stats(x, sigma_lower, sigma_upper; kw...)
+
 function sigma_clipped_stats(
-        x::AbstractArray{T};
+        x::AbstractArray{T},
+        sigma_lower::Real,
+        sigma_upper::Real;
         workspace::WS = nothing,
         exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma_lower::Real = 3,
-        sigma_upper::Real = 3,
         center::C = fast_median!,
         spread::S = mad_std!,
         maxiter::Int = 5,
@@ -160,21 +163,8 @@ function sigma_clipped_stats(
     return merge((center = center_value, spread = spread_value), extra)
 end
 
-function sigma_clip_bounds(
-        x::AbstractArray{T},
-        workspace::WS,
-        exclude::Union{Nothing, AbstractArray{Bool}},
-        sigma_lower::Real,
-        sigma_upper::Real,
-        center::C,
-        spread::S,
-        maxiter::Int,
-    ) where {T, WS, C, S}
-    lower, upper, _ = sigma_clip_compact(
-        x, exclude, workspace, sigma_lower, sigma_upper, center, spread, maxiter
-    )
-    return lower, upper
-end
+sigma_clipped_stats(x::AbstractArray, sigma::Real; kw...) =
+    sigma_clipped_stats(x, sigma, sigma; kw...)
 
 """
     sigma_clip_bounds(x; kwargs...) -> (lower, upper)
@@ -187,20 +177,27 @@ Keywords: `workspace=nothing`, `exclude=nothing`, `sigma_lower=3`,
 `sigma_upper=3`, `center=fast_median!`, `spread=mad_std!`, and `maxiter=5`.
 Use `maxiter=-1` to run until convergence.
 """
+sigma_clip_bounds(x::AbstractArray; sigma_lower::Real = 3, sigma_upper::Real = 3, kw...) =
+    sigma_clip_bounds(x, sigma_lower, sigma_upper; kw...)
+
 function sigma_clip_bounds(
-        x::AbstractArray{T};
+        x::AbstractArray{T},
+        sigma_lower::Real,
+        sigma_upper::Real;
         workspace::WS = nothing,
         exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma_lower::Real = 3,
-        sigma_upper::Real = 3,
         center::C = fast_median!,
         spread::S = mad_std!,
         maxiter::Int = 5,
     ) where {T, WS, C, S}
-    return sigma_clip_bounds(
-        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+    lower, upper, _ = sigma_clip_compact(
+        x, exclude, workspace, sigma_lower, sigma_upper, center, spread, maxiter
     )
+    return lower, upper
 end
+
+sigma_clip_bounds(x::AbstractArray, sigma::Real; kw...) =
+    sigma_clip_bounds(x, sigma, sigma; kw...)
 
 """
     sigma_clip_mask(x; kwargs...) -> BitArray
@@ -208,22 +205,15 @@ end
 Return a mask where `true` marks finite values inside the final clipping bounds.
 Accepts the same keywords as [`sigma_clip_bounds`](@ref).
 """
-function sigma_clip_mask(
-        x::AbstractArray{T};
-        workspace::WS = nothing,
-        exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma_lower::Real = 3,
-        sigma_upper::Real = 3,
-        center::C = fast_median!,
-        spread::S = mad_std!,
-        maxiter::Int = 5,
-    ) where {T, WS, C, S}
-    # Preserve the input axes while retaining the documented packed mask type.
-    target = similar(BitArray, axes(x))
-    return sigma_clip_mask!(
-        x, target; workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
-    )
-end
+sigma_clip_mask(x::AbstractArray; sigma_lower::Real = 3, sigma_upper::Real = 3, kw...) =
+    sigma_clip_mask(x, sigma_lower, sigma_upper; kw...)
+
+# Preserve the input axes while retaining the documented packed mask type.
+sigma_clip_mask(x::AbstractArray, sigma_lower::Real, sigma_upper::Real; kw...) =
+    sigma_clip_mask!(x, similar(BitArray, axes(x)), sigma_lower, sigma_upper; kw...)
+
+sigma_clip_mask(x::AbstractArray, sigma::Real; kw...) =
+    sigma_clip_mask(x, sigma, sigma; kw...)
 
 """
     sigma_clip_mask!(x, target; kwargs...) -> target
@@ -231,20 +221,25 @@ end
 Write the validity mask into `target`, which must have the same axes as `x`.
 Accepts the same keywords as [`sigma_clip_bounds`](@ref).
 """
+sigma_clip_mask!(
+    x::AbstractArray, target::AbstractArray{Bool};
+    sigma_lower::Real = 3, sigma_upper::Real = 3, kw...
+) = sigma_clip_mask!(x, target, sigma_lower, sigma_upper; kw...)
+
 function sigma_clip_mask!(
         x::AbstractArray{T},
-        target::AbstractArray{Bool};
+        target::AbstractArray{Bool},
+        sigma_lower::Real,
+        sigma_upper::Real;
         workspace::WS = nothing,
         exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma_lower::Real = 3,
-        sigma_upper::Real = 3,
         center::C = fast_median!,
         spread::S = mad_std!,
         maxiter::Int = 5,
     ) where {T, WS, C, S}
     validate_axes(target, x)
     lower, upper = sigma_clip_bounds(
-        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+        x, sigma_lower, sigma_upper; workspace, exclude, center, spread, maxiter
     )
 
     @inbounds for i in eachindex(x, target)
@@ -253,24 +248,30 @@ function sigma_clip_mask!(
     return target
 end
 
+sigma_clip_mask!(x::AbstractArray, target::AbstractArray{Bool}, sigma::Real; kw...) =
+    sigma_clip_mask!(x, target, sigma, sigma; kw...)
+
 """
     sigma_clip!(x; kwargs...) -> x
 
 Replace non-finite values and outliers in `x` with `NaN`. The element type must
 represent `NaN`. Accepts the same keywords as [`sigma_clip_bounds`](@ref).
 """
+sigma_clip!(x::AbstractArray{<:Number}; sigma_lower::Real = 3, sigma_upper::Real = 3, kw...) =
+    sigma_clip!(x, sigma_lower, sigma_upper; kw...)
+
 function sigma_clip!(
-        x::AbstractArray{T};
+        x::AbstractArray{T},
+        sigma_lower::Real,
+        sigma_upper::Real;
         workspace::WS = nothing,
         exclude::Union{Nothing, AbstractArray{Bool}} = nothing,
-        sigma_lower::Real = 3,
-        sigma_upper::Real = 3,
         center::C = fast_median!,
         spread::S = mad_std!,
         maxiter::Int = 5,
     ) where {T <: Number, WS, C, S}
     lower, upper = sigma_clip_bounds(
-        x, workspace, exclude, sigma_lower, sigma_upper, center, spread, maxiter
+        x, sigma_lower, sigma_upper; workspace, exclude, center, spread, maxiter
     )
     nan = T(NaN)
 
@@ -280,7 +281,12 @@ function sigma_clip!(
     return x
 end
 
+sigma_clip!(x::AbstractArray, sigma::Real; kw...) = sigma_clip!(x, sigma, sigma; kw...)
+
 sigma_clip!(::AbstractArray{<:Integer}; _kw...) = throw(
+    ArgumentError("sigma_clip! cannot write NaN to an integer array; use sigma_clip instead")
+)
+sigma_clip!(::AbstractArray{<:Integer}, ::Real, ::Real; _kw...) = throw(
     ArgumentError("sigma_clip! cannot write NaN to an integer array; use sigma_clip instead")
 )
 
@@ -292,5 +298,12 @@ Accepts the same keywords as [`sigma_clip_bounds`](@ref).
 """
 sigma_clip(x::AbstractArray{<:Number}; kw...) = sigma_clip!(copy(x); kw...)
 sigma_clip(x::AbstractArray{<:Integer}; kw...) = sigma_clip!(float.(x); kw...)
+
+sigma_clip(x::AbstractArray{<:Number}, sigma_lower::Real, sigma_upper::Real; kw...) =
+    sigma_clip!(copy(x), sigma_lower, sigma_upper; kw...)
+sigma_clip(x::AbstractArray{<:Integer}, sigma_lower::Real, sigma_upper::Real; kw...) =
+    sigma_clip!(float.(x), sigma_lower, sigma_upper; kw...)
+
+sigma_clip(x::AbstractArray, sigma::Real; kw...) = sigma_clip(x, sigma, sigma; kw...)
 
 end
