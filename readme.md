@@ -38,9 +38,11 @@ sigma_clipped_stats(data, 3)
 # (center = 3.0, spread = 2.9652044370112036)
 ```
 
-By default the center is the median and the spread is the median absolute
-deviation scaled to a normal standard deviation, with 3σ bounds and at most
-5 iterations. See the [documentation](https://m4ttes4.github.io/SigmaClip.jl/dev/)
+The sigma threshold has no default: `sigma_clip(data, 3)` uses 3σ on both
+sides, and `sigma_clip(data, 2, 4)` sets the lower and upper thresholds
+separately. By default the center is the median and the spread is the median
+absolute deviation scaled to a normal standard deviation, with at most 5
+iterations. See the [documentation](https://m4ttes4.github.io/SigmaClip.jl/dev/)
 for how the algorithm treats non-finite and excluded values, in-place clipping,
 custom statistics, reusable workspaces, and the API reference.
 
