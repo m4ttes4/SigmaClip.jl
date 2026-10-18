@@ -76,6 +76,25 @@ end
     @test isempty(Test.detect_ambiguities(SigmaClip))
 end
 
+@testset "non-array inputs" begin
+    gen = (2v for v in [1.0, 2.0, 3.0])
+    hint(f) = try
+        f()
+    catch e
+        e isa MethodError ? sprint(showerror, e) : rethrow()
+    end
+    for f in (sigma_clip, sigma_clip!, sigma_clip_mask, sigma_clip_bounds, sigma_clipped_stats)
+        @test occursin("pass collect(x)", hint(() -> f(gen, 3)))
+        @test occursin("pass collect(x)", hint(() -> f(gen, 2, 4)))
+    end
+    @test occursin("pass collect(x)", hint(() -> sigma_clip_mask!(gen, falses(3), 3)))
+    @test occursin("pass collect(x)", hint(() -> sigma_clip_mask!(gen, falses(3), 2, 4)))
+    @test occursin("pass collect(x)", hint(() -> sigma_clipped_stats(skipmissing([1.0, missing]), 3; :m => mean)))
+    @test !occursin("pass collect(x)", hint(() -> sigma_clip!(Union{Missing, Float64}[1.0, missing], 3)))
+    @test !occursin("pass collect(x)", hint(() -> sum(gen, 3)))
+    @test sigma_clip_bounds(collect(gen), 3) == sigma_clip_bounds([2.0, 4.0, 6.0], 3)
+end
+
 @testset "workspace" begin
     data = vcat(fill(1.0, 64), 99.0)
     target = falses(length(data))

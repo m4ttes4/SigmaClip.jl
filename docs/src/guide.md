@@ -32,6 +32,16 @@ All of them accept the same keywords:
 | `spread` | `mad_std!` | Spread estimator. |
 | `maxiter` | `5` | Iteration limit; `-1` runs until convergence. |
 
+The input must be an `AbstractArray`. Iterators such as generators,
+`Iterators.filter` or `skipmissing` are not accepted; collect them first:
+
+```jldoctest
+julia> x = [1.0, missing, 2.0, 3.0, 4.0, 100.0];
+
+julia> sigma_clip_bounds(collect(skipmissing(x)), 3)
+(-1.9478066555168052, 6.947806655516805)
+```
+
 ## Clipping in place
 
 `sigma_clip!` writes `NaN`, so it needs a floating-point array. Here the lower
