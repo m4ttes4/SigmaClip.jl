@@ -342,4 +342,6 @@ sigma_clip(::AbstractArray; _kw...) = throw(
     )
 )
 
+include("init.jl")
+
 end
