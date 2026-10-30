@@ -15,3 +15,4 @@ Manifest.toml
 
 # Documentation build
 docs/build/
+test/generators_test.jl
