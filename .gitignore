@@ -1,18 +1,19 @@
-CONTEXT.md
 *.tmp
 *.json
-CLAUDE.md
 benchmarks/median_mad_astropy_benchmark.jl
 benchmarks/median_mad_astropy_benchmark.pdf
 benchmarks/median_mad_astropy_benchmark.png
 benchmarks/median_mad_astropy_results.csv
 benchmark/Astropy-compare/*_results.csv
-NEWS.md
 .DS_Store
-AGENTS.md
 .codex
 Manifest.toml
 
 # Documentation build
 docs/build/
 test/generators_test.jl
+
+# Markdown: ignore all except readme and docs pages
+*.md
+!readme.md
+!docs/src/**/*.md
